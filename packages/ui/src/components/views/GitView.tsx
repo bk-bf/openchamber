@@ -1774,10 +1774,11 @@ export const GitView: React.FC<GitViewProps> = ({ mode = 'full' }) => {
                 activeId={actionTab}
                 onSelect={(tabID) => setActionTab(tabID as ActionTab)}
                 layoutMode="fit"
+                variant="active-pill"
                 className="h-full"
               />
             </div>
-            <div className="h-px bg-border/40" />
+            {!isSidebarMode ? <div className="h-px bg-border/40" /> : null}
 
             <ScrollableOverlay
               as={ScrollShadow}

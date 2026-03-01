@@ -35,6 +35,10 @@ type SortableTabsStripProps = {
   onClose?: (id: string) => void;
   onReorder?: (activeId: string, overId: string) => void;
   layoutMode?: 'scrollable' | 'fit';
+  variant?: 'default' | 'active-pill' | 'animated';
+  activePillInsetClassName?: string;
+  activePillButtonClassName?: string;
+  animateActivePill?: boolean;
   className?: string;
 };
 
@@ -81,18 +85,77 @@ export const SortableTabsStrip: React.FC<SortableTabsStripProps> = ({
   onClose,
   onReorder,
   layoutMode = 'scrollable',
+  variant = 'default',
+  activePillInsetClassName,
+  activePillButtonClassName,
+  animateActivePill,
   className,
 }) => {
   const scrollRef = React.useRef<HTMLDivElement>(null);
   const [overflow, setOverflow] = React.useState<{ left: boolean; right: boolean }>({ left: false, right: false });
   const itemIDs = React.useMemo(() => items.map((item) => item.id), [items]);
   const isScrollable = layoutMode === 'scrollable';
+  const isActivePillVariant = variant === 'active-pill';
+  const isAnimatedVariant = variant === 'animated';
+  const usesActivePillIndicator = isActivePillVariant || isAnimatedVariant;
+  const useIntrinsicPillSizing = isActivePillVariant && isScrollable;
+  const showPillTrackBackground = isAnimatedVariant;
+  const shouldAnimateActivePill = animateActivePill ?? isAnimatedVariant;
   const reorderEnabled = typeof onReorder === 'function';
   const Wrapper = reorderEnabled ? SortableTabWrapper : StaticTabWrapper;
+  const tabRefs = React.useRef<Map<string, HTMLButtonElement>>(new Map());
+  const [pillRect, setPillRect] = React.useState<{ left: number; top: number; width: number; height: number } | null>(null);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
   );
+
+  const isSamePillRect = React.useCallback((
+    a: { left: number; top: number; width: number; height: number } | null,
+    b: { left: number; top: number; width: number; height: number } | null,
+  ) => {
+    if (!a || !b) {
+      return a === b;
+    }
+    return Math.abs(a.left - b.left) < 0.5
+      && Math.abs(a.top - b.top) < 0.5
+      && Math.abs(a.width - b.width) < 0.5
+      && Math.abs(a.height - b.height) < 0.5;
+  }, []);
+
+  const setTabRef = React.useCallback((id: string, element: HTMLButtonElement | null) => {
+    if (element) {
+      tabRefs.current.set(id, element);
+      return;
+    }
+    tabRefs.current.delete(id);
+  }, []);
+
+  const updateActivePillRect = React.useCallback(() => {
+    if (!usesActivePillIndicator || !activeId) {
+      setPillRect((prev) => (prev === null ? prev : null));
+      return;
+    }
+
+    const container = scrollRef.current;
+    const activeTab = tabRefs.current.get(activeId);
+    if (!container || !activeTab) {
+      setPillRect((prev) => (prev === null ? prev : null));
+      return;
+    }
+
+    const containerRect = container.getBoundingClientRect();
+    const tabRect = activeTab.getBoundingClientRect();
+
+    const nextRect = {
+      left: tabRect.left - containerRect.left + container.scrollLeft,
+      top: tabRect.top - containerRect.top + container.scrollTop,
+      width: tabRect.width,
+      height: tabRect.height,
+    };
+
+    setPillRect((prev) => (isSamePillRect(prev, nextRect) ? prev : nextRect));
+  }, [activeId, isSamePillRect, usesActivePillIndicator]);
 
   const updateOverflow = React.useCallback(() => {
     if (!isScrollable) {
@@ -133,6 +196,38 @@ export const SortableTabsStrip: React.FC<SortableTabsStripProps> = ({
       observer.disconnect();
     };
   }, [isScrollable, items.length, updateOverflow]);
+
+  React.useEffect(() => {
+    if (!usesActivePillIndicator) {
+      setPillRect(null);
+      return;
+    }
+
+    updateActivePillRect();
+
+    const element = scrollRef.current;
+    if (!element) {
+      return;
+    }
+
+    const observer = new ResizeObserver(updateActivePillRect);
+    observer.observe(element);
+
+    if (activeId) {
+      const activeTab = tabRefs.current.get(activeId);
+      if (activeTab) {
+        observer.observe(activeTab);
+      }
+    }
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [activeId, items.length, updateActivePillRect, usesActivePillIndicator]);
+
+  React.useLayoutEffect(() => {
+    updateActivePillRect();
+  });
 
   React.useEffect(() => {
     if (!isScrollable || !activeId) {
@@ -177,16 +272,21 @@ export const SortableTabsStrip: React.FC<SortableTabsStripProps> = ({
 
   const list = (
     <div className={cn('relative flex h-full min-w-0 flex-1', className)}>
-      {isScrollable && overflow.left ? (
+      {isScrollable && !usesActivePillIndicator && overflow.left ? (
         <div className="pointer-events-none absolute inset-y-0 left-0 z-10 w-6 bg-gradient-to-r from-background to-transparent" />
       ) : null}
-      {isScrollable && overflow.right ? (
+      {isScrollable && !usesActivePillIndicator && overflow.right ? (
         <div className="pointer-events-none absolute inset-y-0 right-0 z-10 w-6 bg-gradient-to-l from-background to-transparent" />
       ) : null}
       <div
         ref={scrollRef}
         className={cn(
-          'flex h-full min-w-0 flex-1 items-stretch',
+          'relative flex h-full min-w-0 flex-1',
+          usesActivePillIndicator ? 'items-center overflow-hidden' : 'items-stretch',
+          usesActivePillIndicator && '@container/pill-tabs',
+          usesActivePillIndicator && 'pill-tabs__track',
+          usesActivePillIndicator && (activePillInsetClassName ?? 'gap-0.5 py-0.5'),
+          showPillTrackBackground && 'rounded-lg bg-[var(--surface-muted)]/50',
           isScrollable
             ? 'overflow-x-auto scrollbar-none'
             : 'overflow-x-hidden',
@@ -195,36 +295,88 @@ export const SortableTabsStrip: React.FC<SortableTabsStripProps> = ({
         role="tablist"
         aria-label="Tabs"
       >
+        {usesActivePillIndicator && pillRect ? (
+          <div
+            className={cn(
+              'pointer-events-none absolute left-0 top-0 z-0 rounded-lg border border-[var(--interactive-border)] bg-[var(--surface-elevated)]',
+              shouldAnimateActivePill && 'transition-[transform,width,height] duration-200 ease-out'
+            )}
+            style={{
+              transform: `translate(${pillRect.left}px, ${pillRect.top}px)`,
+              width: `${pillRect.width}px`,
+              height: `${pillRect.height}px`,
+            }}
+          />
+        ) : null}
         {items.map((item) => {
           const isActive = item.id === activeId;
           const closable = item.closable !== false && Boolean(onClose);
-          const wrapperClassName = isScrollable ? undefined : 'min-w-0 flex-1 basis-0';
+          const wrapperClassName = (isScrollable || useIntrinsicPillSizing)
+            ? undefined
+            : usesActivePillIndicator
+              ? 'flex-1 basis-0 min-w-fit'
+              : 'min-w-0 flex-1 basis-0';
           return (
             <Wrapper key={item.id} id={item.id} className={wrapperClassName}>
               <div
                 className={cn(
-                  'group flex h-full items-center border-r border-border/40',
-                  isScrollable ? 'shrink-0' : 'w-full min-w-0',
-                  isActive
-                    ? 'bg-interactive-selection/55 text-interactive-selection-foreground'
-                    : 'bg-interactive-selection/12 text-muted-foreground hover:bg-interactive-selection/28 hover:text-foreground'
+                  'group flex h-full items-center',
+                  (isScrollable || useIntrinsicPillSizing)
+                    ? 'shrink-0'
+                    : usesActivePillIndicator
+                      ? 'w-full'
+                      : 'w-full min-w-0',
+                  usesActivePillIndicator
+                    ? 'relative z-10 bg-transparent'
+                    : isActive
+                      ? 'border-r border-border/40 bg-[var(--surface-elevated)] text-foreground'
+                      : 'border-r border-border/40 bg-[var(--surface-elevated)]/25 text-muted-foreground hover:bg-[var(--surface-elevated)]/65 hover:text-foreground'
                 )}
               >
                 <button
+                  ref={(element) => setTabRef(item.id, element)}
                   type="button"
                   role="tab"
                   aria-selected={isActive}
                   onClick={() => onSelect(item.id)}
                   className={cn(
-                    'flex h-full min-w-0 items-center typography-micro',
-                    isScrollable ? 'max-w-56 justify-start truncate pl-3 pr-2 text-left' : 'w-full justify-center truncate px-2.5 text-center'
+                    usesActivePillIndicator
+                      ? 'animated-tabs__button pill-tabs__button relative z-10 flex flex-1 items-center justify-center rounded-lg text-sm font-medium transition-colors duration-150 gap-1.5'
+                      : 'flex h-full min-w-0 items-center typography-micro',
+                    usesActivePillIndicator
+                      ? useIntrinsicPillSizing
+                        ? 'shrink-0 whitespace-nowrap px-3 text-center'
+                        : isScrollable
+                          ? 'max-w-56 shrink-0 px-3 text-center'
+                          : 'px-3 text-center'
+                      : isScrollable
+                        ? 'max-w-56 justify-start truncate pl-3 pr-2 text-left'
+                        : 'w-full justify-center truncate px-2.5 text-center',
+                    usesActivePillIndicator
+                      ? (activePillButtonClassName ?? (isActivePillVariant ? 'h-[27px]' : 'h-7'))
+                      : null,
+                    usesActivePillIndicator
+                      ? isActive
+                        ? 'text-foreground'
+                        : 'text-muted-foreground hover:text-foreground'
+                      : null,
+                    usesActivePillIndicator
+                      ? 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--interactive-focus-ring)] focus-visible:ring-offset-1 focus-visible:ring-offset-background'
+                      : null
                   )}
                   title={item.title ?? item.label}
                 >
-                  <span className={cn('flex min-w-0 items-center gap-1.5', !isScrollable && 'justify-center')}>
-                    {item.icon ? <span className="flex shrink-0 items-center justify-center">{item.icon}</span> : null}
-                    <span className="truncate leading-[1.2]">{item.label}</span>
-                  </span>
+                  {usesActivePillIndicator ? (
+                    <>
+                      {item.icon ? <span className="flex shrink-0 items-center justify-center">{item.icon}</span> : null}
+                      <span className="animated-tabs__label truncate">{item.label}</span>
+                    </>
+                  ) : (
+                    <span className={cn('flex min-w-0 items-center gap-1.5', !isScrollable && 'justify-center')}>
+                      {item.icon ? <span className="flex shrink-0 items-center justify-center">{item.icon}</span> : null}
+                      <span className="truncate leading-[1.2]">{item.label}</span>
+                    </span>
+                  )}
                 </button>
                 {closable ? (
                   <button

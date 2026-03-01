@@ -27,12 +27,13 @@ export const RightSidebarTabs: React.FC = () => {
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-transparent">
-      <div className="h-8 border-b border-border/40 bg-transparent">
+      <div className="h-9 bg-transparent pt-1">
         <SortableTabsStrip
           items={tabItems}
           activeId={rightSidebarTab}
           onSelect={(tabID) => setRightSidebarTab(tabID as RightTab)}
           layoutMode="fit"
+          variant="active-pill"
           className="h-full"
         />
       </div>

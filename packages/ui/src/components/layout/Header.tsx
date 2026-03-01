@@ -1107,8 +1107,8 @@ export const Header: React.FC<HeaderProps> = ({
               align="end"
               className="w-[min(30rem,calc(100vw-2rem))] max-h-[75vh] overflow-y-auto bg-[var(--surface-elevated)] p-0"
             >
-              <div className="sticky top-0 z-20 border-b border-[var(--interactive-border)] bg-[var(--surface-elevated)] p-2">
-                <div className="h-8">
+              <div className="sticky top-0 z-20 border-b border-[var(--interactive-border)] bg-[var(--surface-elevated)] px-2 py-px">
+                <div className="h-9">
                   <SortableTabsStrip
                     items={servicesTabItems}
                     activeId={desktopServicesTab}
@@ -1120,6 +1120,9 @@ export const Header: React.FC<HeaderProps> = ({
                       }
                     }}
                     layoutMode="fit"
+                    variant="active-pill"
+                    activePillInsetClassName="gap-0.5 px-px py-0"
+                    activePillButtonClassName="h-8"
                     className="h-full"
                   />
                 </div>
@@ -1155,6 +1158,8 @@ export const Header: React.FC<HeaderProps> = ({
                             activeId={quotaDisplayMode}
                             onSelect={(tabID) => handleDisplayModeChange(tabID as 'usage' | 'remaining')}
                             layoutMode="fit"
+                            variant="active-pill"
+                            activePillInsetClassName="gap-0.5 px-px py-0"
                             className="h-full"
                           />
                         </div>
@@ -1606,9 +1611,9 @@ export const Header: React.FC<HeaderProps> = ({
                 className="h-dvh w-[100vw] max-h-none rounded-none border-0 p-0 overflow-hidden"
               >
                 <div className="flex h-full flex-col bg-[var(--surface-elevated)]">
-                  <div className="sticky top-0 z-20 border-b border-[var(--interactive-border)] bg-[var(--surface-elevated)] p-2">
-                    <div className="flex items-center justify-between gap-2 px-3 py-3">
-                      <div className="h-8 min-w-0 flex-1">
+                  <div className="sticky top-0 z-20 border-b border-[var(--interactive-border)] bg-[var(--surface-elevated)] px-2 py-px">
+                    <div className="flex items-center justify-between gap-2 px-3 py-0">
+                      <div className="h-9 min-w-0 flex-1">
                         <SortableTabsStrip
                           items={mobileServicesTabItems}
                           activeId={mobileServicesTab}
@@ -1620,6 +1625,9 @@ export const Header: React.FC<HeaderProps> = ({
                             }
                           }}
                           layoutMode="fit"
+                          variant="active-pill"
+                          activePillInsetClassName="gap-0.5 px-px py-0"
+                          activePillButtonClassName="h-8"
                           className="h-full"
                         />
                       </div>
