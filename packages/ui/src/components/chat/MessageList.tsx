@@ -15,6 +15,7 @@ import { filterSyntheticParts } from '@/lib/messages/synthetic';
 import { detectTurns, type Turn } from './hooks/useTurnGrouping';
 import { TurnGroupingProvider, useMessageNeighbors, useTurnGroupingContextForMessage, useTurnGroupingContextStatic } from './contexts/TurnGroupingContext';
 import { useSessionStore } from '@/stores/useSessionStore';
+import { useUIStore } from '@/stores/useUIStore';
 import { useDeviceInfo } from '@/lib/device';
 import { FadeInDisabledProvider } from './message/FadeInOnReveal';
 
@@ -528,7 +529,8 @@ const MessageListContent: React.FC<{
     onMessageContentChange: (reason?: ContentChangeReason) => void;
     getAnimationHandlers: (messageId: string) => AnimationHandlers;
     scrollToBottom?: (options?: { instant?: boolean; force?: boolean }) => void;
-}> = ({ entries, onMessageContentChange, getAnimationHandlers, scrollToBottom }) => {
+    stickyUserHeader: boolean;
+}> = ({ entries, onMessageContentChange, getAnimationHandlers, scrollToBottom, stickyUserHeader }) => {
     return (
         <>
             {entries.map((entry) => (
@@ -538,7 +540,7 @@ const MessageListContent: React.FC<{
                     onMessageContentChange={onMessageContentChange}
                     getAnimationHandlers={getAnimationHandlers}
                     scrollToBottom={scrollToBottom}
-                    stickyUserHeader
+                    stickyUserHeader={stickyUserHeader}
                 />
             ))}
         </>
@@ -560,6 +562,7 @@ const MessageList = React.forwardRef<MessageListHandle, MessageListProps>(({
     scrollRef,
 }, ref) => {
     const { isMobile } = useDeviceInfo();
+    const stickyUserHeader = useUIStore(state => state.stickyUserHeader);
 
     React.useEffect(() => {
         if (permissions.length === 0 && questions.length === 0) {
@@ -1044,6 +1047,7 @@ const MessageList = React.forwardRef<MessageListHandle, MessageListProps>(({
                             onMessageContentChange={onMessageContentChange}
                             getAnimationHandlers={getAnimationHandlers}
                             scrollToBottom={scrollToBottom}
+                            stickyUserHeader={stickyUserHeader}
                         />
                     )}
                 </FadeInDisabledProvider>
