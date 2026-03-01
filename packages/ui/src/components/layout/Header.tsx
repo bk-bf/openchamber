@@ -121,6 +121,19 @@ const resolveTilde = (path: string, homeDir: string | null): string => {
   return trimmed;
 };
 
+const getActiveContextMode = (panelState: {
+  isOpen: boolean;
+  activeTabId: string | null;
+  tabs: Array<{ id: string; mode: 'diff' | 'file' | 'context' | 'plan' | 'chat' }>;
+} | undefined): 'diff' | 'file' | 'context' | 'plan' | 'chat' | null => {
+  if (!panelState?.isOpen || !Array.isArray(panelState.tabs) || panelState.tabs.length === 0) {
+    return null;
+  }
+
+  const activeTab = panelState.tabs.find((tab) => tab.id === panelState.activeTabId) ?? panelState.tabs[panelState.tabs.length - 1];
+  return activeTab?.mode ?? null;
+};
+
 interface TabConfig {
   id: MainTab;
   label: string;
@@ -644,7 +657,7 @@ export const Header: React.FC<HeaderProps> = ({
     }
 
     const panelState = contextPanelByDirectory[directory];
-    if (panelState?.isOpen && panelState.mode === 'context') {
+    if (getActiveContextMode(panelState) === 'context') {
       closeContextPanel(directory);
       return;
     }
@@ -658,7 +671,7 @@ export const Header: React.FC<HeaderProps> = ({
       return false;
     }
     const panelState = contextPanelByDirectory[directory];
-    return Boolean(panelState?.isOpen && panelState.mode === 'context');
+    return getActiveContextMode(panelState) === 'context';
   }, [contextPanelByDirectory, openDirectory]);
 
   const handleOpenContextPlan = React.useCallback(() => {
@@ -668,7 +681,7 @@ export const Header: React.FC<HeaderProps> = ({
     }
 
     const panelState = contextPanelByDirectory[directory];
-    if (panelState?.isOpen && panelState.mode === 'plan') {
+    if (getActiveContextMode(panelState) === 'plan') {
       closeContextPanel(directory);
       return;
     }
@@ -682,7 +695,7 @@ export const Header: React.FC<HeaderProps> = ({
       return false;
     }
     const panelState = contextPanelByDirectory[directory];
-    return Boolean(panelState?.isOpen && panelState.mode === 'plan');
+    return getActiveContextMode(panelState) === 'plan';
   }, [contextPanelByDirectory, openDirectory]);
 
   const desktopHeaderIconButtonClass = 'app-region-no-drag inline-flex h-8 w-8 items-center justify-center gap-2 rounded-md typography-ui-label font-medium text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:pointer-events-none disabled:opacity-50 hover:bg-interactive-hover transition-colors';

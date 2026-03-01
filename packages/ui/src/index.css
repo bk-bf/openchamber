@@ -7,6 +7,13 @@
 
 @custom-variant dark (&:is(.dark *));
 
+:root.oc-theme-switching *,
+:root.oc-theme-switching *::before,
+:root.oc-theme-switching *::after {
+  transition: none !important;
+  animation: none !important;
+}
+
 /* Suppress WebKit-specific hover/focus adornments on the chat textarea */
 textarea[data-chat-input="true"] {
   -webkit-appearance: none;

@@ -399,6 +399,8 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
 
   const currentDirectory = useEffectiveDirectory() ?? '';
   const root = normalizePath(currentDirectory.trim());
+  const showEditorTabsRow = isMobile || mode !== 'editor-only';
+  const suppressFileLoadingIndicator = mode === 'editor-only' && !isMobile;
   const searchFiles = useFileSearchStore((state) => state.searchFiles);
   const gitStatus = useGitStatus(currentDirectory);
 
@@ -1858,6 +1860,7 @@ const saveMdViewMode = React.useCallback((mode: 'preview' | 'edit') => {
       </Dialog>
       <div className="flex flex-col border-b border-border/40 flex-shrink-0">
         {/* Row 1: Tabs */}
+        {showEditorTabsRow ? (
         <div className="flex min-w-0 items-center px-3 py-1.5">
           {isMobile && showMobilePageContent && (
             <button
@@ -1997,10 +2000,11 @@ const saveMdViewMode = React.useCallback((mode: 'preview' | 'edit') => {
             )
           )}
         </div>
+        ) : null}
 
         {/* Row 2: Actions (right-aligned) */}
         {selectedFile && (
-          <div className="flex items-center justify-end gap-1 px-3 pb-1.5">
+          <div className={cn('flex items-center justify-end gap-1 px-3 pb-1.5', !showEditorTabsRow && 'pt-1.5')}>
             {canEdit && textViewMode === 'edit' && (
               <Button
                 variant="ghost"
@@ -2168,10 +2172,14 @@ const saveMdViewMode = React.useCallback((mode: 'preview' | 'edit') => {
           {!selectedFile ? (
             <div className="p-3 typography-ui text-muted-foreground">Pick a file from the tree.</div>
           ) : fileLoading ? (
-            <div className="p-3 flex items-center gap-2 typography-ui text-muted-foreground">
-              <RiLoader4Line className="h-4 w-4 animate-spin" />
-              Loading…
-            </div>
+            suppressFileLoadingIndicator
+              ? <div className="p-3" />
+              : (
+                <div className="p-3 flex items-center gap-2 typography-ui text-muted-foreground">
+                  <RiLoader4Line className="h-4 w-4 animate-spin" />
+                  Loading…
+                </div>
+              )
           ) : fileError ? (
             <div className="p-3 typography-ui text-[color:var(--status-error)]">{fileError}</div>
           ) : isSelectedImage ? (
@@ -2567,10 +2575,14 @@ const saveMdViewMode = React.useCallback((mode: 'preview' | 'edit') => {
       <div className="flex-1 min-h-0 min-w-0 relative">
         <ScrollableOverlay outerClassName="h-full min-w-0" className="h-full min-w-0">
           {fileLoading ? (
-            <div className="p-4 flex items-center gap-2 typography-ui text-muted-foreground">
-              <RiLoader4Line className="h-4 w-4 animate-spin" />
-              Loading…
-            </div>
+            suppressFileLoadingIndicator
+              ? <div className="p-4" />
+              : (
+                <div className="p-4 flex items-center gap-2 typography-ui text-muted-foreground">
+                  <RiLoader4Line className="h-4 w-4 animate-spin" />
+                  Loading…
+                </div>
+              )
           ) : fileError ? (
             <div className="p-4 typography-ui text-[color:var(--status-error)]">{fileError}</div>
           ) : isSelectedImage ? (
