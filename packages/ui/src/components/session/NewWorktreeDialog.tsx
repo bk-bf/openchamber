@@ -34,6 +34,7 @@ import { cn } from '@/lib/utils';
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { useGitHubAuthStore } from '@/stores/useGitHubAuthStore';
 import { useUIStore } from '@/stores/useUIStore';
+import { useSessionStore } from '@/stores/useSessionStore';
 import { validateWorktreeCreate, createWorktree } from '@/lib/worktrees/worktreeManager';
 import { withWorktreeUpstreamDefaults } from '@/lib/worktrees/worktreeCreate';
 import { getWorktreeSetupCommands } from '@/lib/openchamberConfig';
@@ -162,6 +163,26 @@ export function NewWorktreeDialog({
       .sort();
   }, [branches]);
   
+  // Get existing worktrees for the current project to avoid conflicts
+  const availableWorktreesByProject = useSessionStore((state) => state.availableWorktreesByProject);
+  const existingWorktreeNames = React.useMemo(() => {
+    if (!projectDirectory) return new Set<string>();
+    const worktrees = availableWorktreesByProject.get(projectDirectory) ?? [];
+    return new Set(worktrees.map(wt => wt.name));
+  }, [availableWorktreesByProject, projectDirectory]);
+  
+  // Generate a unique slug that doesn't conflict with existing worktrees
+  const generateUniqueSlug = React.useCallback((maxAttempts = 10): string => {
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const slug = generateBranchSlug();
+      if (!existingWorktreeNames.has(slug)) {
+        return slug;
+      }
+    }
+    // Fallback: add timestamp if all attempts failed
+    return `${generateBranchSlug()}-${Date.now().toString(36).slice(-4)}`;
+  }, [existingWorktreeNames]);
+  
   const [githubDialogOpen, setGithubDialogOpen] = React.useState(false);
   
   // Mobile branch picker states
@@ -241,7 +262,16 @@ export function NewWorktreeDialog({
       });
       return;
     }
-  }, [open]);
+    
+    // Generate unique slug when dialog opens
+    const uniqueSlug = generateUniqueSlug();
+    setNewBranchState(prev => ({
+      ...prev,
+      branchName: uniqueSlug,
+      worktreeName: uniqueSlug,
+      isSyncingWorktreeName: true,
+    }));
+  }, [open, generateUniqueSlug]);
 
   // Sync worktree name with branch name for new-branch mode
   React.useEffect(() => {
@@ -541,7 +571,7 @@ export function NewWorktreeDialog({
             />
           </div>
 
-          <div className="space-y-4">
+          <div className="space-y-6">
             {/* Branch Name / Existing Branch Selection */}
             {mode === 'existing-branch' ? (
               <div className="space-y-1.5">
@@ -931,7 +961,7 @@ export function NewWorktreeDialog({
               </div>
             </DialogHeader>
 
-            <div className="flex-1 overflow-y-auto mt-2 space-y-4">
+            <div className="flex-1 overflow-y-auto mt-2 space-y-6">
               {/* Branch Name / Existing Branch Selection */}
               {mode === 'existing-branch' ? (
                 <div className="space-y-1.5">
