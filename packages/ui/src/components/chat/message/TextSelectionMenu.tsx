@@ -17,6 +17,8 @@ interface MenuPosition {
 }
 
 const MENU_TRANSITION_MS = 200;
+const DESKTOP_MENU_SIDE_MARGIN_PX = 8;
+const DESKTOP_MENU_FALLBACK_WIDTH_PX = 280;
 
 export const TextSelectionMenu: React.FC<TextSelectionMenuProps> = ({ containerRef }) => {
   const [position, setPosition] = React.useState<MenuPosition>({ x: 0, y: 0, show: false });
@@ -66,6 +68,27 @@ export const TextSelectionMenu: React.FC<TextSelectionMenuProps> = ({ containerR
     }, MENU_TRANSITION_MS);
   }, []);
 
+  const getDesktopClampedX = React.useCallback((anchorX: number) => {
+    if (typeof window === 'undefined') {
+      return anchorX;
+    }
+
+    const viewportWidth = window.innerWidth;
+    const measuredWidth = menuRef.current?.offsetWidth;
+    const menuWidth = measuredWidth && Number.isFinite(measuredWidth)
+      ? measuredWidth
+      : DESKTOP_MENU_FALLBACK_WIDTH_PX;
+    const halfWidth = menuWidth / 2;
+    const minX = DESKTOP_MENU_SIDE_MARGIN_PX + halfWidth;
+    const maxX = viewportWidth - DESKTOP_MENU_SIDE_MARGIN_PX - halfWidth;
+
+    if (minX > maxX) {
+      return viewportWidth / 2;
+    }
+
+    return Math.min(Math.max(anchorX, minX), maxX);
+  }, []);
+
   const showMenu = React.useCallback(() => {
     if (!pendingSelectionRef.current) return;
 
@@ -79,7 +102,9 @@ export const TextSelectionMenu: React.FC<TextSelectionMenuProps> = ({ containerR
     const shouldAnimateIn = !position.show;
 
     // Position menu above the selection
-    const menuX = rect.left + rect.width / 2;
+    const menuX = isMobile
+      ? rect.left + rect.width / 2
+      : getDesktopClampedX(rect.left + rect.width / 2);
     const menuY = rect.top - 10;
 
     setSelectedText(text);
@@ -99,7 +124,25 @@ export const TextSelectionMenu: React.FC<TextSelectionMenuProps> = ({ containerR
         openRafRef.current = null;
       });
     }
-  }, [position.show]);
+  }, [getDesktopClampedX, isMobile, position.show]);
+
+  React.useEffect(() => {
+    if (!position.show || isMobile) {
+      return;
+    }
+
+    const handleViewportResize = () => {
+      setPosition((prev) => ({
+        ...prev,
+        x: getDesktopClampedX(prev.x),
+      }));
+    };
+
+    window.addEventListener('resize', handleViewportResize);
+    return () => {
+      window.removeEventListener('resize', handleViewportResize);
+    };
+  }, [getDesktopClampedX, isMobile, position.show]);
 
   const handleSelectionChange = React.useCallback(() => {
     const selection = window.getSelection();
@@ -319,7 +362,7 @@ export const TextSelectionMenu: React.FC<TextSelectionMenuProps> = ({ containerR
     >
       <div
         className={cn(
-          'flex items-center gap-1',
+          'flex items-center gap-1 whitespace-nowrap',
           'rounded-lg border border-[var(--interactive-border)]',
           'bg-[var(--surface-elevated)] shadow-none',
           'px-1.5 py-1',
@@ -344,7 +387,7 @@ export const TextSelectionMenu: React.FC<TextSelectionMenuProps> = ({ containerR
           type="button"
         >
           <RiAddLine className="h-4 w-4" />
-          <span>Add to chat</span>
+          <span className="whitespace-nowrap">Add to chat</span>
         </button>
       
         <div className="w-px h-4 bg-[var(--interactive-border)]" />
@@ -362,7 +405,7 @@ export const TextSelectionMenu: React.FC<TextSelectionMenuProps> = ({ containerR
           type="button"
         >
           <RiChatNewLine className="h-4 w-4" />
-          <span>New session</span>
+          <span className="whitespace-nowrap">New session</span>
         </button>
       </div>
     </div>,
