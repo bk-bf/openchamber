@@ -9812,14 +9812,76 @@ async function main(options = {}) {
          originRepo = originResolved?.repo || null;
        }
 
+       const normalizeGitHubOwner = (value) => typeof value === 'string' ? value.trim().toLowerCase() : '';
        const candidateHeadOwners = [];
        const pushHeadOwner = (owner) => {
-         if (typeof owner !== 'string') return;
-         const normalized = owner.trim();
-         if (!normalized) return;
-         if (candidateHeadOwners.includes(normalized)) return;
-         candidateHeadOwners.push(normalized);
-       };
+          if (typeof owner !== 'string') return;
+          const normalized = owner.trim();
+          if (!normalized) return;
+          if (candidateHeadOwners.some((existing) => normalizeGitHubOwner(existing) === normalizeGitHubOwner(normalized))) return;
+          candidateHeadOwners.push(normalized);
+        };
+
+        const fetchDefaultBranch = async (targetRepo) => {
+          if (!targetRepo?.owner || !targetRepo?.repo) {
+            return null;
+          }
+          try {
+            const response = await octokit.rest.repos.get({
+              owner: targetRepo.owner,
+              repo: targetRepo.repo,
+            });
+            const defaultBranch = typeof response?.data?.default_branch === 'string'
+              ? response.data.default_branch.trim()
+              : '';
+            return defaultBranch || null;
+          } catch {
+            return null;
+          }
+        };
+
+        const getHeadOwner = (pr) => {
+          const repoOwner = pr?.head?.repo?.owner?.login;
+          if (typeof repoOwner === 'string' && repoOwner.trim()) {
+            return repoOwner.trim();
+          }
+          const userOwner = pr?.head?.user?.login;
+          if (typeof userOwner === 'string' && userOwner.trim()) {
+            return userOwner.trim();
+          }
+          const headLabel = typeof pr?.head?.label === 'string' ? pr.head.label.trim() : '';
+          const separatorIndex = headLabel.indexOf(':');
+          if (separatorIndex > 0) {
+            return headLabel.slice(0, separatorIndex).trim();
+          }
+          return '';
+        };
+
+        const candidateHeadOwnerSet = new Set();
+        const rebuildCandidateHeadOwnerSet = () => {
+          candidateHeadOwnerSet.clear();
+          candidateHeadOwners.forEach((owner) => {
+            const normalized = normalizeGitHubOwner(owner);
+            if (normalized) {
+              candidateHeadOwnerSet.add(normalized);
+            }
+          });
+        };
+
+        const getHeadOwnerPriority = (pr) => {
+          const owner = normalizeGitHubOwner(getHeadOwner(pr));
+          const index = candidateHeadOwners.findIndex((candidate) => normalizeGitHubOwner(candidate) === owner);
+          return index === -1 ? Number.POSITIVE_INFINITY : index;
+        };
+
+        const pickPreferredPr = (prs) => {
+          if (!Array.isArray(prs) || prs.length === 0) {
+            return null;
+          }
+          return prs
+            .slice()
+            .sort((a, b) => getHeadOwnerPriority(a) - getHeadOwnerPriority(b))[0] ?? null;
+        };
 
        // First, use branch tracking remote owner (where branch is usually pushed).
        const { getStatus } = await import('./lib/git/index.js');
@@ -9832,12 +9894,18 @@ async function main(options = {}) {
          }
        }
 
-       // Then same-repo and origin fallback owners.
-       pushHeadOwner(repo.owner);
-       pushHeadOwner(originRepo?.owner);
+        // Then same-repo and origin fallback owners.
+        pushHeadOwner(repo.owner);
+        pushHeadOwner(originRepo?.owner);
+        rebuildCandidateHeadOwnerSet();
 
-       const listByHead = async (targetRepo, state, headOwner) => {
-         const resp = await octokit.rest.pulls.list({
+        const repoDefaultBranch = await fetchDefaultBranch(repo);
+        if (repoDefaultBranch && repoDefaultBranch === branch) {
+          return res.json({ connected: true, repo, branch, pr: null, checks: null, canMerge: false });
+        }
+
+        const listByHead = async (targetRepo, state, headOwner) => {
+          const resp = await octokit.rest.pulls.list({
            owner: targetRepo.owner,
            repo: targetRepo.repo,
            state,
@@ -9847,18 +9915,24 @@ async function main(options = {}) {
          return Array.isArray(resp?.data) ? resp.data[0] : null;
        };
 
-       const listByHeadRef = async (targetRepo, state) => {
-         const resp = await octokit.rest.pulls.list({
-           owner: targetRepo.owner,
+        const listByHeadRef = async (targetRepo, state) => {
+          const resp = await octokit.rest.pulls.list({
+            owner: targetRepo.owner,
            repo: targetRepo.repo,
            state,
-           per_page: 100,
-         });
-         const matches = Array.isArray(resp?.data)
-           ? resp.data.filter((pr) => pr?.head?.ref === branch)
-           : [];
-         return matches[0] ?? null;
-       };
+            per_page: 100,
+          });
+          const matches = Array.isArray(resp?.data)
+            ? resp.data.filter((pr) => {
+              if (pr?.head?.ref !== branch) {
+                return false;
+              }
+              const owner = normalizeGitHubOwner(getHeadOwner(pr));
+              return Boolean(owner) && candidateHeadOwnerSet.has(owner);
+            })
+            : [];
+          return pickPreferredPr(matches);
+        };
 
        const tryFindPr = async (targetRepo) => {
          let found = null;
