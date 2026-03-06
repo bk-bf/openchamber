@@ -18,14 +18,22 @@ const isPendingChecks = (status: GitHubPullRequestStatus | null): boolean => {
   return checks.state === 'pending' || checks.pending > 0;
 };
 
-export const getGitHubPrStatusKey = (directory: string, branch: string, remoteName?: string | null): string =>
-  `${directory}::${branch}::${remoteName ?? ''}`;
+export const getGitHubPrStatusKey = (directory: string, branch: string, remoteName?: string | null): string => {
+  void remoteName;
+  return `${directory}::${branch}`;
+};
 
 type RefreshOptions = {
   force?: boolean;
   onlyExistingPr?: boolean;
   silent?: boolean;
   markInitialResolved?: boolean;
+};
+
+type PrTrackingTarget = {
+  directory: string;
+  branch: string;
+  remoteName?: string | null;
 };
 
 type PrRuntimeParams = {
@@ -57,11 +65,66 @@ type GitHubPrStatusStore = {
   stopWatching: (key: string) => void;
   refresh: (key: string, options?: RefreshOptions) => Promise<void>;
   updateStatus: (key: string, updater: (prev: GitHubPullRequestStatus | null) => GitHubPullRequestStatus | null) => void;
+  syncBackgroundTargets: (args: {
+    targets: PrTrackingTarget[];
+    github?: RuntimeAPIs['github'];
+    githubAuthChecked: boolean;
+    githubConnected: boolean | null;
+  }) => void;
 };
 
 const timers = new Map<string, number>();
 const bootstrapTimers = new Map<string, number[]>();
-const inFlight = new Set<string>();
+const inFlightBySignature = new Set<string>();
+const lastRefreshBySignature = new Map<string, number>();
+const backgroundWatchingKeys = new Set<string>();
+
+const getSignatureFromParams = (params: PrRuntimeParams | null | undefined): string | null => {
+  if (!params?.directory || !params.branch) {
+    return null;
+  }
+  return `${params.directory}::${params.branch}`;
+};
+
+const getKeysBySignature = (entries: Record<string, PrStatusEntry>, signature: string): string[] => {
+  return Object.entries(entries)
+    .filter(([, entry]) => getSignatureFromParams(entry.params) === signature)
+    .map(([key]) => key);
+};
+
+const pickFetchParamsForSignature = (
+  entries: Record<string, PrStatusEntry>,
+  signature: string,
+  preferredKey: string,
+): PrRuntimeParams | null => {
+  const keys = getKeysBySignature(entries, signature);
+  const candidates = keys
+    .map((key) => entries[key])
+    .filter((entry): entry is PrStatusEntry => Boolean(entry?.params))
+    .map((entry) => entry.params)
+    .filter((params): params is PrRuntimeParams => Boolean(params?.canShow && params.github?.prStatus));
+
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  const preferred = entries[preferredKey]?.params;
+  if (
+    preferred
+    && getSignatureFromParams(preferred) === signature
+    && preferred.canShow
+    && preferred.github?.prStatus
+  ) {
+    return preferred;
+  }
+
+  const withRemote = candidates.find((params) => Boolean(params.remoteName));
+  if (withRemote) {
+    return withRemote;
+  }
+
+  return candidates[0] ?? null;
+};
 
 const createEntry = (): PrStatusEntry => ({
   status: null,
@@ -73,6 +136,18 @@ const createEntry = (): PrStatusEntry => ({
   watchers: 0,
   params: null,
 });
+
+const mergeParams = (current: PrRuntimeParams | null, next: PrRuntimeParams): PrRuntimeParams => {
+  if (!current) {
+    return next;
+  }
+
+  return {
+    ...current,
+    ...next,
+    remoteName: next.remoteName ?? current.remoteName ?? null,
+  };
+};
 
 export const useGitHubPrStatusStore = create<GitHubPrStatusStore>((set, get) => ({
   entries: {},
@@ -99,7 +174,7 @@ export const useGitHubPrStatusStore = create<GitHubPrStatusStore>((set, get) => 
           ...state.entries,
           [key]: {
             ...current,
-            params,
+            params: mergeParams(current.params, params),
           },
         },
       };
@@ -143,7 +218,7 @@ export const useGitHubPrStatusStore = create<GitHubPrStatusStore>((set, get) => 
       bootstrapTimers.set(key, existing);
     };
 
-    void get().refresh(key, { force: true, silent: true, markInitialResolved: true });
+    void get().refresh(key, { silent: true, markInitialResolved: true });
     PR_BOOTSTRAP_RETRY_DELAYS_MS.forEach((delay) => runBootstrapRefresh(delay));
 
     const timerId = window.setInterval(() => {
@@ -243,150 +318,165 @@ export const useGitHubPrStatusStore = create<GitHubPrStatusStore>((set, get) => 
   refresh: async (key, options) => {
     const state = get();
     const entry = state.entries[key];
-    const params = entry?.params;
+    const signature = getSignatureFromParams(entry?.params);
 
-    if (!entry || !params || !params.canShow) {
+    if (!entry || !signature) {
       return;
     }
-    if (options?.onlyExistingPr && !entry.status?.pr) {
+    const signatureKeys = getKeysBySignature(state.entries, signature);
+    const hasExistingPr = signatureKeys.some((signatureKey) => Boolean(state.entries[signatureKey]?.status?.pr));
+    if (options?.onlyExistingPr && !hasExistingPr) {
       return;
     }
-    if (!options?.force && Date.now() - entry.lastRefreshAt < PR_REVALIDATE_TTL_MS) {
+    const lastRefreshAt = lastRefreshBySignature.get(signature) ?? 0;
+    if (!options?.force && Date.now() - lastRefreshAt < PR_REVALIDATE_TTL_MS) {
       return;
     }
-    if (inFlight.has(key)) {
+    if (inFlightBySignature.has(signature)) {
       return;
     }
 
-    inFlight.add(key);
+    const params = pickFetchParamsForSignature(state.entries, signature, key);
+    if (!params) {
+      return;
+    }
+
+    inFlightBySignature.add(signature);
+    lastRefreshBySignature.set(signature, Date.now());
 
     set((prev) => {
-      const current = prev.entries[key];
-      if (!current) {
-        return prev;
-      }
+      const nextEntries = { ...prev.entries };
+      signatureKeys.forEach((signatureKey) => {
+        const current = nextEntries[signatureKey];
+        if (!current) {
+          return;
+        }
+        nextEntries[signatureKey] = {
+          ...current,
+          lastRefreshAt: Date.now(),
+          isLoading: options?.silent ? current.isLoading : true,
+          error: null,
+        };
+      });
       return {
-        entries: {
-          ...prev.entries,
-          [key]: {
-            ...current,
-            lastRefreshAt: Date.now(),
-            isLoading: options?.silent ? current.isLoading : true,
-            error: null,
-          },
-        },
+        entries: nextEntries,
       };
     });
 
     if (params.githubAuthChecked && params.githubConnected === false) {
       set((prev) => {
-        const current = prev.entries[key];
-        if (!current) {
-          return prev;
-        }
+        const nextEntries = { ...prev.entries };
+        signatureKeys.forEach((signatureKey) => {
+          const current = nextEntries[signatureKey];
+          if (!current) {
+            return;
+          }
+          nextEntries[signatureKey] = {
+            ...current,
+            status: { connected: false },
+            error: null,
+            isLoading: options?.silent ? current.isLoading : false,
+            isInitialStatusResolved: options?.markInitialResolved === false ? current.isInitialStatusResolved : true,
+          };
+        });
         return {
-          entries: {
-            ...prev.entries,
-            [key]: {
-              ...current,
-              status: { connected: false },
-              error: null,
-              isLoading: options?.silent ? current.isLoading : false,
-              isInitialStatusResolved: options?.markInitialResolved === false ? current.isInitialStatusResolved : true,
-            },
-          },
+          entries: nextEntries,
         };
       });
-      inFlight.delete(key);
+      inFlightBySignature.delete(signature);
       return;
     }
 
     if (!params.github?.prStatus) {
       set((prev) => {
-        const current = prev.entries[key];
-        if (!current) {
-          return prev;
-        }
+        const nextEntries = { ...prev.entries };
+        signatureKeys.forEach((signatureKey) => {
+          const current = nextEntries[signatureKey];
+          if (!current) {
+            return;
+          }
+          nextEntries[signatureKey] = {
+            ...current,
+            status: null,
+            error: 'GitHub runtime API unavailable',
+            isLoading: options?.silent ? current.isLoading : false,
+            isInitialStatusResolved: options?.markInitialResolved === false ? current.isInitialStatusResolved : true,
+          };
+        });
         return {
-          entries: {
-            ...prev.entries,
-            [key]: {
-              ...current,
-              status: null,
-              error: 'GitHub runtime API unavailable',
-              isLoading: options?.silent ? current.isLoading : false,
-              isInitialStatusResolved: options?.markInitialResolved === false ? current.isInitialStatusResolved : true,
-            },
-          },
+          entries: nextEntries,
         };
       });
-      inFlight.delete(key);
+      inFlightBySignature.delete(signature);
       return;
     }
 
     try {
       const next = await params.github.prStatus(params.directory, params.branch, params.remoteName ?? undefined);
       set((prev) => {
-        const current = prev.entries[key];
-        if (!current) {
-          return prev;
-        }
-
-        const prevPr = current.status?.pr;
-        const nextPr = next.pr;
-        const shouldCarryBody = Boolean(
-          nextPr
-          && prevPr
-          && nextPr.number === prevPr.number
-          && (!nextPr.body || !nextPr.body.trim())
-          && typeof prevPr.body === 'string'
-          && prevPr.body.trim().length > 0,
-        );
-
-        const status = shouldCarryBody && nextPr && prevPr?.body
-          ? {
-            ...next,
-            pr: {
-              ...nextPr,
-              body: prevPr.body,
-            },
+        const nextEntries = { ...prev.entries };
+        signatureKeys.forEach((signatureKey) => {
+          const current = nextEntries[signatureKey];
+          if (!current) {
+            return;
           }
-          : next;
+
+          const prevPr = current.status?.pr;
+          const nextPr = next.pr;
+          const shouldCarryBody = Boolean(
+            nextPr
+            && prevPr
+            && nextPr.number === prevPr.number
+            && (!nextPr.body || !nextPr.body.trim())
+            && typeof prevPr.body === 'string'
+            && prevPr.body.trim().length > 0,
+          );
+
+          const status = shouldCarryBody && nextPr && prevPr?.body
+            ? {
+              ...next,
+              pr: {
+                ...nextPr,
+                body: prevPr.body,
+              },
+            }
+            : next;
+
+          nextEntries[signatureKey] = {
+            ...current,
+            status,
+            error: null,
+            isLoading: options?.silent ? current.isLoading : false,
+            isInitialStatusResolved: options?.markInitialResolved === false ? current.isInitialStatusResolved : true,
+          };
+        });
 
         return {
-          entries: {
-            ...prev.entries,
-            [key]: {
-              ...current,
-              status,
-              error: null,
-              isLoading: options?.silent ? current.isLoading : false,
-              isInitialStatusResolved: options?.markInitialResolved === false ? current.isInitialStatusResolved : true,
-            },
-          },
+          entries: nextEntries,
         };
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       set((prev) => {
-        const current = prev.entries[key];
-        if (!current) {
-          return prev;
-        }
+        const nextEntries = { ...prev.entries };
+        signatureKeys.forEach((signatureKey) => {
+          const current = nextEntries[signatureKey];
+          if (!current) {
+            return;
+          }
+          nextEntries[signatureKey] = {
+            ...current,
+            error: message || 'Failed to load PR status',
+            isLoading: options?.silent ? current.isLoading : false,
+            isInitialStatusResolved: options?.markInitialResolved === false ? current.isInitialStatusResolved : true,
+          };
+        });
         return {
-          entries: {
-            ...prev.entries,
-            [key]: {
-              ...current,
-              error: message || 'Failed to load PR status',
-              isLoading: options?.silent ? current.isLoading : false,
-              isInitialStatusResolved: options?.markInitialResolved === false ? current.isInitialStatusResolved : true,
-            },
-          },
+          entries: nextEntries,
         };
       });
     } finally {
-      inFlight.delete(key);
+      inFlightBySignature.delete(signature);
     }
   },
 
@@ -402,6 +492,61 @@ export const useGitHubPrStatusStore = create<GitHubPrStatusStore>((set, get) => 
           },
         },
       };
+    });
+  },
+
+  syncBackgroundTargets: ({ targets, github, githubAuthChecked, githubConnected }) => {
+    if (!github || targets.length === 0) {
+      Array.from(backgroundWatchingKeys).forEach((key) => {
+        get().stopWatching(key);
+        backgroundWatchingKeys.delete(key);
+      });
+      return;
+    }
+
+    const uniqueTargets = new Map<string, PrTrackingTarget>();
+    targets.forEach((target) => {
+      const directory = target.directory.trim();
+      const branch = target.branch.trim();
+      if (!directory || !branch) {
+        return;
+      }
+      const key = getGitHubPrStatusKey(directory, branch, target.remoteName ?? null);
+      if (!uniqueTargets.has(key)) {
+        uniqueTargets.set(key, {
+          directory,
+          branch,
+          remoteName: target.remoteName ?? null,
+        });
+      }
+    });
+
+    const nextKeys = new Set(uniqueTargets.keys());
+
+    Array.from(backgroundWatchingKeys).forEach((key) => {
+      if (nextKeys.has(key)) {
+        return;
+      }
+      get().stopWatching(key);
+      backgroundWatchingKeys.delete(key);
+    });
+
+    uniqueTargets.forEach((target, key) => {
+      get().ensureEntry(key);
+      get().setParams(key, {
+        directory: target.directory,
+        branch: target.branch,
+        remoteName: target.remoteName ?? null,
+        canShow: true,
+        github,
+        githubAuthChecked,
+        githubConnected,
+      });
+
+      if (!backgroundWatchingKeys.has(key)) {
+        get().startWatching(key);
+        backgroundWatchingKeys.add(key);
+      }
     });
   },
 }));

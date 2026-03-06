@@ -67,6 +67,22 @@ type PrIndicator = {
   url: string | null;
   state: 'open' | 'closed' | 'merged';
   draft: boolean;
+  title: string | null;
+  base: string | null;
+  head: string | null;
+  checks: {
+    state: 'success' | 'failure' | 'pending' | 'unknown';
+    total: number;
+    success: number;
+    failure: number;
+    pending: number;
+  } | null;
+  canMerge: boolean | null;
+  mergeableState: string | null;
+  repo: {
+    owner: string;
+    repo: string;
+  } | null;
 };
 
 const getPrVisualState = (status: GitHubPullRequestStatus | null): PrVisualState | null => {
@@ -849,6 +865,26 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
         url: typeof pr.url === 'string' && pr.url.trim().length > 0 ? pr.url : null,
         state: pr.state,
         draft: Boolean(pr.draft),
+        title: typeof pr.title === 'string' && pr.title.trim().length > 0 ? pr.title : null,
+        base: typeof pr.base === 'string' && pr.base.trim().length > 0 ? pr.base : null,
+        head: typeof pr.head === 'string' && pr.head.trim().length > 0 ? pr.head : null,
+        checks: entry.status?.checks
+          ? {
+            state: entry.status.checks.state,
+            total: entry.status.checks.total,
+            success: entry.status.checks.success,
+            failure: entry.status.checks.failure,
+            pending: entry.status.checks.pending,
+          }
+          : null,
+        canMerge: typeof entry.status?.canMerge === 'boolean' ? entry.status.canMerge : null,
+        mergeableState: typeof pr.mergeableState === 'string' ? pr.mergeableState : null,
+        repo: entry.status?.repo
+          ? {
+            owner: entry.status.repo.owner,
+            repo: entry.status.repo.repo,
+          }
+          : null,
       };
       const existing = result.get(key);
       if (!existing || getPrVisualPriority(nextIndicator.visualState) > getPrVisualPriority(existing.visualState)) {

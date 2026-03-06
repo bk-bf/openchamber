@@ -360,8 +360,8 @@ export const PullRequestSection: React.FC<{
   );
 
   const prStatusKey = React.useMemo(
-    () => getGitHubPrStatusKey(directory, branch, selectedRemote?.name ?? null),
-    [directory, branch, selectedRemote?.name],
+    () => getGitHubPrStatusKey(directory, branch),
+    [directory, branch],
   );
   const statusEntry = useGitHubPrStatusStore((state) => state.entries[prStatusKey]);
 
@@ -1059,8 +1059,15 @@ export const PullRequestSection: React.FC<{
   }, [baseBranch, branch, remotes, snapshotKey, trackingBranch]);
 
   React.useEffect(() => {
-    void refresh({ force: true, markInitialResolved: true });
+    void refresh({ markInitialResolved: true });
   }, [prStatusKey, refresh]);
+
+  React.useEffect(() => {
+    if (!canShow || !selectedRemote?.name) {
+      return;
+    }
+    void refresh({ force: true, silent: true, markInitialResolved: true });
+  }, [canShow, refresh, selectedRemote?.name]);
 
   React.useEffect(() => {
     const isTerminal = status?.pr?.state === 'closed' || status?.pr?.state === 'merged';

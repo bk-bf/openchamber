@@ -45,8 +45,6 @@ import {
 
 import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
 import { useUIStore } from '@/stores/useUIStore';
-import { useGitHubAuthStore } from '@/stores/useGitHubAuthStore';
-import { getGitHubPrStatusKey, useGitHubPrStatusStore } from '@/stores/useGitHubPrStatusStore';
 import { IntegrateCommitsSection } from './git/IntegrateCommitsSection';
 
 import { GitHeader } from './git/GitHeader';
@@ -217,26 +215,8 @@ const gitViewSnapshots = new Map<string, GitViewSnapshot>();
 const normalizePath = (value?: string | null): string =>
   (value || '').replace(/\\/g, '/').replace(/\/+$/, '');
 
-const getTrackingRemoteName = (trackingBranch?: string): string | null => {
-  if (!trackingBranch) {
-    return null;
-  }
-  const slashIndex = trackingBranch.indexOf('/');
-  if (slashIndex <= 0) {
-    return null;
-  }
-  return trackingBranch.slice(0, slashIndex) || null;
-};
-
 export const GitView: React.FC = () => {
-  const { git, github } = useRuntimeAPIs();
-  const githubAuthStatus = useGitHubAuthStore((state) => state.status);
-  const githubAuthChecked = useGitHubAuthStore((state) => state.hasChecked);
-  const refreshGitHubAuthStatus = useGitHubAuthStore((state) => state.refreshStatus);
-  const ensurePrStatusEntry = useGitHubPrStatusStore((state) => state.ensureEntry);
-  const setPrStatusParams = useGitHubPrStatusStore((state) => state.setParams);
-  const startPrStatusWatching = useGitHubPrStatusStore((state) => state.startWatching);
-  const stopPrStatusWatching = useGitHubPrStatusStore((state) => state.stopWatching);
+  const { git } = useRuntimeAPIs();
   const currentDirectory = useEffectiveDirectory();
   const {
     currentSessionId,
@@ -1235,65 +1215,6 @@ export const GitView: React.FC = () => {
       branch: currentBranch,
     };
   }, [canShowPullRequestSection, currentBranch, currentDirectory]);
-  const backgroundPrRemoteName = React.useMemo(() => {
-    const trackingRemote = getTrackingRemoteName(status?.tracking ?? undefined);
-    if (trackingRemote && remotes.some((remote) => remote.name === trackingRemote)) {
-      return trackingRemote;
-    }
-    if (remotes.some((remote) => remote.name === 'upstream')) {
-      return 'upstream';
-    }
-    if (remotes.some((remote) => remote.name === 'origin')) {
-      return 'origin';
-    }
-    return remotes[0]?.name ?? null;
-  }, [remotes, status?.tracking]);
-  const backgroundPrStatusKey = React.useMemo(() => {
-    if (!pullRequestProps || !backgroundPrRemoteName) {
-      return null;
-    }
-    return getGitHubPrStatusKey(pullRequestProps.directory, pullRequestProps.branch, backgroundPrRemoteName);
-  }, [backgroundPrRemoteName, pullRequestProps]);
-
-  React.useEffect(() => {
-    if (!canShowPullRequestSection || !github || githubAuthChecked) {
-      return;
-    }
-    void refreshGitHubAuthStatus(github);
-  }, [canShowPullRequestSection, github, githubAuthChecked, refreshGitHubAuthStatus]);
-
-  React.useEffect(() => {
-    if (!backgroundPrStatusKey || !pullRequestProps || !backgroundPrRemoteName) {
-      return;
-    }
-
-    ensurePrStatusEntry(backgroundPrStatusKey);
-    setPrStatusParams(backgroundPrStatusKey, {
-      directory: pullRequestProps.directory,
-      branch: pullRequestProps.branch,
-      remoteName: backgroundPrRemoteName,
-      canShow: true,
-      github,
-      githubAuthChecked,
-      githubConnected: githubAuthStatus?.connected ?? null,
-    });
-
-    startPrStatusWatching(backgroundPrStatusKey);
-    return () => {
-      stopPrStatusWatching(backgroundPrStatusKey);
-    };
-  }, [
-    backgroundPrRemoteName,
-    backgroundPrStatusKey,
-    ensurePrStatusEntry,
-    github,
-    githubAuthChecked,
-    githubAuthStatus?.connected,
-    pullRequestProps,
-    setPrStatusParams,
-    startPrStatusWatching,
-    stopPrStatusWatching,
-  ]);
   // Keep these sections stable in layout; individual cards render placeholders when unavailable.
 
   const toggleFileSelection = (path: string) => {

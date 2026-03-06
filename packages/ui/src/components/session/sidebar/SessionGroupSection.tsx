@@ -4,6 +4,7 @@ import {
   RiAddLine,
   RiArchiveLine,
   RiArrowDownSLine,
+  RiArrowLeftLongLine,
   RiArrowRightSLine,
   RiDeleteBinLine,
   RiGitBranchLine,
@@ -68,6 +69,22 @@ type Props = {
     url: string | null;
     state: 'open' | 'closed' | 'merged';
     draft: boolean;
+    title: string | null;
+    base: string | null;
+    head: string | null;
+    checks: {
+      state: 'success' | 'failure' | 'pending' | 'unknown';
+      total: number;
+      success: number;
+      failure: number;
+      pending: number;
+    } | null;
+    canMerge: boolean | null;
+    mergeableState: string | null;
+    repo: {
+      owner: string;
+      repo: string;
+    } | null;
   }>;
   onToggleCollapsedGroup: (groupKey: string) => void;
 };
@@ -205,6 +222,25 @@ export function SessionGroupSection(props: Props): React.ReactNode {
   const showBranchSubtitle = !group.isMain && (isBranchDifferentFromLabel(group.branch, group.label) || Boolean(prIndicator));
   const prVisualState = prIndicator?.visualState ?? null;
   const branchIconColor = prVisualState ? `var(--pr-${prVisualState})` : undefined;
+  const checksSummary = prIndicator && prIndicator.state === 'open' && prIndicator.checks
+    ? `${prIndicator.checks.success}/${prIndicator.checks.total} checks passed`
+    : null;
+  const checksTail = prIndicator && prIndicator.state === 'open' && prIndicator.checks
+    ? [
+      prIndicator.checks.failure > 0 ? `${prIndicator.checks.failure} failing` : null,
+      prIndicator.checks.pending > 0 ? `${prIndicator.checks.pending} pending` : null,
+    ].filter((item): item is string => Boolean(item)).join(', ')
+    : null;
+  const mergeabilityLabel = prIndicator && prIndicator.state === 'open'
+    ? (prIndicator.canMerge === true
+        ? 'Mergeable'
+        : (prIndicator.canMerge === false ? 'Conflicts or blocked' : null))
+    : null;
+  const mergeStateLabel = prIndicator && prIndicator.state === 'open' && prIndicator.mergeableState
+    ? `Merge state: ${prIndicator.mergeableState}`
+    : null;
+  const baseBranchLabel = prIndicator?.base ?? null;
+  const headBranchLabel = prIndicator?.head ?? null;
   const handlePrLinkClick = (event: React.MouseEvent<HTMLElement>) => {
     event.preventDefault();
     event.stopPropagation();
@@ -362,27 +398,65 @@ export function SessionGroupSection(props: Props): React.ReactNode {
           {group.isArchivedBucket ? (
             <RiArchiveLine className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground" />
           ) : (!group.isMain || isGitProject) ? (
-            <RiGitBranchLine
-              className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground"
-              style={branchIconColor ? { color: branchIconColor } : undefined}
-            />
+            showInlinePrTitle && prIndicator ? null : (
+              <RiGitBranchLine
+                className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground"
+                style={branchIconColor ? { color: branchIconColor } : undefined}
+              />
+            )
           ) : null}
           <div className="min-w-0 flex flex-col justify-center">
             <p className={cn('text-[14px] font-semibold truncate', isActiveGroup ? 'text-primary' : 'text-muted-foreground')}>
               {showInlinePrTitle && prIndicator ? (
                 <>
-                  {prIndicator.url ? (
-                    <button
-                      type="button"
-                      className="underline hover:no-underline"
-                      onMouseDown={(event) => event.stopPropagation()}
-                      onClick={handlePrLinkClick}
-                    >
-                      #{prIndicator.number}
-                    </button>
-                  ) : (
-                    <span>#{prIndicator.number}</span>
-                  )}
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span className="inline-flex items-center gap-1">
+                        <RiGitBranchLine
+                          className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground"
+                          style={branchIconColor ? { color: branchIconColor } : undefined}
+                        />
+                        {prIndicator.url ? (
+                          <button
+                            type="button"
+                            className="underline hover:no-underline"
+                            onMouseDown={(event) => event.stopPropagation()}
+                            onClick={handlePrLinkClick}
+                          >
+                            #{prIndicator.number}
+                          </button>
+                        ) : (
+                          <span>#{prIndicator.number}</span>
+                        )}
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent side="top" sideOffset={6} align="start" className="max-w-sm">
+                      <div className="space-y-1 text-xs">
+                        {(baseBranchLabel || headBranchLabel) ? (
+                          <div className="text-muted-foreground truncate">
+                            {baseBranchLabel && headBranchLabel ? (
+                              <>
+                                <span>{baseBranchLabel}</span>
+                                <RiArrowLeftLongLine className="mx-0.5 inline h-3 w-3 align-[-2px]" />
+                                <span>{headBranchLabel}</span>
+                              </>
+                            ) : (
+                              <span>{baseBranchLabel ?? headBranchLabel ?? ''}</span>
+                            )}
+                          </div>
+                        ) : null}
+                        {mergeStateLabel ? <div className="text-muted-foreground truncate">{mergeStateLabel}</div> : null}
+                        {(mergeabilityLabel || checksSummary) ? (
+                          <div className="text-muted-foreground truncate">
+                            {mergeabilityLabel ?? ''}
+                            {mergeabilityLabel && checksSummary ? ' • ' : ''}
+                            {checksSummary ?? ''}
+                            {checksTail ? ` (${checksTail})` : ''}
+                          </div>
+                        ) : null}
+                      </div>
+                    </TooltipContent>
+                  </Tooltip>
                   <span>{` ${group.branch}`}</span>
                 </>
               ) : (
