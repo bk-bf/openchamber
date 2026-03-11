@@ -9797,7 +9797,7 @@ async function main(options = {}) {
         return res.status(400).json({ error: 'directory and branch are required' });
       }
 
-      const { getOctokitOrNull } = await getGitHubLibraries();
+      const { getOctokitOrNull, getGitHubAuth } = await getGitHubLibraries();
       const octokit = getOctokitOrNull();
       if (!octokit) {
         return res.json({ connected: false });

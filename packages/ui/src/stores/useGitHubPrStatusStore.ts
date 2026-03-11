@@ -83,6 +83,7 @@ type GitHubPrStatusStore = {
   startWatching: (key: string) => void;
   stopWatching: (key: string) => void;
   refresh: (key: string, options?: RefreshOptions) => Promise<void>;
+  refreshTargets: (targets: PrTrackingTarget[], options?: RefreshOptions) => Promise<void>;
   updateStatus: (key: string, updater: (prev: GitHubPullRequestStatus | null) => GitHubPullRequestStatus | null) => void;
   syncBackgroundTargets: (args: {
     targets: PrTrackingTarget[];
@@ -572,6 +573,23 @@ export const useGitHubPrStatusStore = create<GitHubPrStatusStore>()(
           inFlightBySignature.delete(signature);
           set((prev) => ({ ...prev, activeRequestCount: Math.max(0, prev.activeRequestCount - 1) }));
         }
+      },
+
+      refreshTargets: async (targets, options) => {
+        const keys = Array.from(new Set(
+          targets
+            .map((target) => {
+              const directory = target.directory.trim();
+              const branch = target.branch.trim();
+              if (!directory || !branch) {
+                return null;
+              }
+              return getGitHubPrStatusKey(directory, branch, target.remoteName ?? null);
+            })
+            .filter((key): key is string => Boolean(key)),
+        ));
+
+        await Promise.all(keys.map((key) => get().refresh(key, options)));
       },
 
       updateStatus: (key, updater) => {

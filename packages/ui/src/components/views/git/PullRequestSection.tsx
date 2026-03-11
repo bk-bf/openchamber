@@ -101,6 +101,8 @@ const getPrVisualState = (status: GitHubPullRequestStatus | null): 'draft' | 'op
   return 'open';
 };
 
+const PR_ACTION_REFRESH_DELAYS_MS = [2_000, 5_000] as const;
+
 const branchToTitle = (branch: string): string => {
   return branch
     .replace(/^refs\/heads\//, '')
@@ -450,6 +452,7 @@ export const PullRequestSection: React.FC<{
   const lastSyncedPrNumberRef = React.useRef<number | null>(null);
   const didUserOverrideRemoteRef = React.useRef(false);
   const autoRemoteProbeDoneRef = React.useRef<Set<string>>(new Set());
+  const pendingActionRefreshTimersRef = React.useRef<number[]>([]);
 
   const canShow = Boolean(directory && branch && baseBranch && branch !== baseBranch);
 
@@ -958,6 +961,15 @@ export const PullRequestSection: React.FC<{
     await refreshPrStatus(prStatusKey, options);
   }, [prStatusKey, refreshPrStatus]);
 
+  const scheduleActionRefresh = React.useCallback(() => {
+    pendingActionRefreshTimersRef.current.forEach((timerId) => {
+      window.clearTimeout(timerId);
+    });
+    pendingActionRefreshTimersRef.current = PR_ACTION_REFRESH_DELAYS_MS.map((delayMs) => window.setTimeout(() => {
+      void refresh({ force: true, silent: true, markInitialResolved: true });
+    }, delayMs));
+  }, [refresh]);
+
   // Refetch PR status when selected remote changes
   const handleRemoteChange = React.useCallback((remote: GitRemote) => {
     didUserOverrideRemoteRef.current = true;
@@ -1129,6 +1141,16 @@ export const PullRequestSection: React.FC<{
     });
   }, [snapshotKey, title, body, draft, additionalContext, targetBaseBranch, selectedRemote?.name, directory, branch]);
 
+  React.useEffect(() => {
+    const pendingActionRefreshTimers = pendingActionRefreshTimersRef.current;
+    return () => {
+      pendingActionRefreshTimers.forEach((timerId) => {
+        window.clearTimeout(timerId);
+      });
+      pendingActionRefreshTimersRef.current = [];
+    };
+  }, []);
+
   const generateDescription = React.useCallback(async () => {
     if (isGenerating) return;
     if (!directory) return;
@@ -1195,13 +1217,14 @@ export const PullRequestSection: React.FC<{
       toast.success('PR created');
       updatePrStatus(prStatusKey, (prev) => (prev ? { ...prev, pr } : prev));
       await refresh({ force: true });
+      scheduleActionRefresh();
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       toast.error('Failed to create PR', { description: message });
     } finally {
       setIsCreating(false);
     }
-  }, [body, branch, directory, draft, github, prStatusKey, refresh, selectedRemote, targetBaseBranch, title, updatePrStatus]);
+  }, [body, branch, directory, draft, github, prStatusKey, refresh, scheduleActionRefresh, selectedRemote, targetBaseBranch, title, updatePrStatus]);
 
   const mergePr = React.useCallback(async (pr: GitHubPullRequest) => {
     if (!github?.prMerge) {
@@ -1217,6 +1240,7 @@ export const PullRequestSection: React.FC<{
         toast.message('PR not merged', { description: result.message || 'Not mergeable' });
       }
       await refresh({ force: true });
+      scheduleActionRefresh();
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       toast.error('Merge failed', { description: message });
@@ -1226,7 +1250,7 @@ export const PullRequestSection: React.FC<{
     } finally {
       setIsMerging(false);
     }
-  }, [directory, github, mergeMethod, refresh]);
+  }, [directory, github, mergeMethod, refresh, scheduleActionRefresh]);
 
   const markReady = React.useCallback(async (pr: GitHubPullRequest) => {
     if (!github?.prReady) {
@@ -1238,6 +1262,7 @@ export const PullRequestSection: React.FC<{
       await github.prReady({ directory, number: pr.number });
       toast.success('Marked ready for review');
       await refresh({ force: true });
+      scheduleActionRefresh();
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       toast.error('Failed to mark ready', { description: message });
@@ -1247,7 +1272,7 @@ export const PullRequestSection: React.FC<{
     } finally {
       setIsMarkingReady(false);
     }
-  }, [directory, github, refresh]);
+  }, [directory, github, refresh, scheduleActionRefresh]);
 
   const updatePr = React.useCallback(async (pr: GitHubPullRequest) => {
     if (!github?.prUpdate) {
@@ -1281,13 +1306,14 @@ export const PullRequestSection: React.FC<{
       setIsEditingPr(false);
       toast.success('PR updated');
       await refresh({ force: true });
+      scheduleActionRefresh();
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       toast.error('Failed to update PR', { description: message });
     } finally {
       setIsUpdating(false);
     }
-  }, [directory, editBody, editTitle, github, prStatusKey, refresh, updatePrStatus]);
+  }, [directory, editBody, editTitle, github, prStatusKey, refresh, scheduleActionRefresh, updatePrStatus]);
 
   if (!canShow) {
     return null;
