@@ -7806,6 +7806,17 @@ async function main(options = {}) {
     return TUNNEL_MODE_QUICK;
   };
 
+  const resolveNormalizedTunnelHost = (publicUrl) => {
+    if (typeof publicUrl !== 'string' || publicUrl.trim().length === 0) {
+      return null;
+    }
+    try {
+      return new URL(publicUrl).hostname.toLowerCase();
+    } catch {
+      return null;
+    }
+  };
+
   const resolvePreferredTunnelProvider = async (reqBody = null) => {
     if (typeof reqBody?.provider === 'string' && reqBody.provider.trim().length > 0) {
       return normalizeTunnelProvider(reqBody.provider);
@@ -8098,10 +8109,23 @@ async function main(options = {}) {
         });
       }
 
-       const activeNormalizedMode = resolveActiveNormalizedTunnelMode();
-       if (!tunnelAuthController.getActiveTunnelId() || !tunnelAuthController.getActiveTunnelHost()) {
-         tunnelAuthController.setActiveTunnel({ tunnelId: crypto.randomUUID(), publicUrl, mode: activeNormalizedMode });
-       }
+      const activeNormalizedMode = resolveActiveNormalizedTunnelMode();
+      const activeTunnelId = tunnelAuthController.getActiveTunnelId();
+      const activeTunnelHost = tunnelAuthController.getActiveTunnelHost();
+      const resolvedTunnelHost = resolveNormalizedTunnelHost(publicUrl);
+      const activeTunnelMode = tunnelAuthController.getActiveTunnelMode();
+      const needsActiveTunnelSync = !activeTunnelId
+        || !activeTunnelHost
+        || !resolvedTunnelHost
+        || activeTunnelHost !== resolvedTunnelHost
+        || activeTunnelMode !== activeNormalizedMode;
+      if (needsActiveTunnelSync) {
+        tunnelAuthController.setActiveTunnel({
+          tunnelId: activeTunnelId || crypto.randomUUID(),
+          publicUrl,
+          mode: activeNormalizedMode,
+        });
+      }
 
       const bootstrapStatus = tunnelAuthController.getBootstrapStatus();
       const providerMetadata = tunnelService.getProviderMetadata();
@@ -8200,6 +8224,11 @@ async function main(options = {}) {
         : normalizeTunnelBootstrapTtlMs(settings?.tunnelBootstrapTtlMs));
       const sessionTtlMs = requestSessionTtlMs ?? normalizeTunnelSessionTtlMs(settings?.tunnelSessionTtlMs);
 
+      const previousTunnelId = tunnelAuthController.getActiveTunnelId();
+      const previousMode = tunnelAuthController.getActiveTunnelMode();
+      const previousProvider = tunnelService.resolveActiveProvider();
+      const previousUrl = tunnelService.getPublicUrl();
+
       const { publicUrl, provider: activeProvider, providerMetadata } = await startTunnelWithNormalizedRequest({
         provider,
         mode,
@@ -8211,9 +8240,24 @@ async function main(options = {}) {
         selectedPresetName,
       });
 
-      if (!tunnelAuthController.getActiveTunnelId() || !tunnelAuthController.getActiveTunnelHost()) {
-        tunnelAuthController.setActiveTunnel({ tunnelId: crypto.randomUUID(), publicUrl, mode });
+      const replacedTunnel = Boolean(previousTunnelId) && (
+        previousMode !== mode
+        || previousProvider !== activeProvider
+        || previousUrl !== publicUrl
+      );
+      let revokedBootstrapCount = 0;
+      let invalidatedSessionCount = 0;
+      if (replacedTunnel && previousTunnelId) {
+        const revoked = tunnelAuthController.revokeTunnelArtifacts(previousTunnelId);
+        revokedBootstrapCount = revoked.revokedBootstrapCount;
+        invalidatedSessionCount = revoked.invalidatedSessionCount;
       }
+
+      tunnelAuthController.setActiveTunnel({
+        tunnelId: replacedTunnel || !previousTunnelId ? crypto.randomUUID() : previousTunnelId,
+        publicUrl,
+        mode,
+      });
 
       const bootstrapToken = tunnelAuthController.issueBootstrapToken({ ttlMs: bootstrapTtlMs });
       const connectUrl = `${publicUrl.replace(/\/$/, '')}/connect?t=${encodeURIComponent(bootstrapToken.token)}`;
@@ -8230,6 +8274,16 @@ async function main(options = {}) {
         managedRemoteTunnelTokenPresetIds: isCloudflareProvider ? managedRemoteTunnelConfig.tunnels.map((entry) => entry.id) : [],
         connectUrl,
         bootstrapExpiresAt: bootstrapToken.expiresAt,
+        replacedTunnel,
+        replaced: replacedTunnel
+          ? {
+            mode: previousMode,
+            provider: previousProvider,
+            url: previousUrl,
+          }
+          : null,
+        revokedBootstrapCount,
+        invalidatedSessionCount,
         policy: 'tunnel-gated',
         activeTunnelMode: mode,
         activeSessions: tunnelAuthController.listTunnelSessions(),

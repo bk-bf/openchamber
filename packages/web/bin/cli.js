@@ -3389,6 +3389,16 @@ const commands = {
           if (body.connectUrl) {
             logStatus('success', body.connectUrl);
           }
+          if (body.replacedTunnel) {
+            const revokedBootstrapCount = Number.isFinite(body.revokedBootstrapCount) ? body.revokedBootstrapCount : 0;
+            const invalidatedSessionCount = Number.isFinite(body.invalidatedSessionCount) ? body.invalidatedSessionCount : 0;
+            const previousMode = typeof body?.replaced?.mode === 'string' ? body.replaced.mode : 'unknown';
+            logStatus(
+              'warning',
+              `replaced previous ${previousMode} tunnel`,
+              `revoked ${revokedBootstrapCount}, invalidated ${invalidatedSessionCount}`,
+            );
+          }
           logStatus('info', `save: ${replayCommand}`);
           logStatus('info', 'status: openchamber tunnel status | stop: openchamber tunnel stop');
           clackOutro('tunnel ready');

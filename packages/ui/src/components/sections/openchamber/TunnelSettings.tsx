@@ -120,6 +120,22 @@ interface TunnelStatusResponse {
   };
 }
 
+interface TunnelStartResponse {
+  ok?: boolean;
+  error?: string;
+  url?: string;
+  connectUrl?: string | null;
+  bootstrapExpiresAt?: number | null;
+  activeTunnelMode?: ApiTunnelMode | null;
+  mode?: ApiTunnelMode;
+  activeSessions?: TunnelSessionRecord[];
+  managedRemoteTunnelTokenPresetIds?: string[];
+  localPort?: number;
+  replacedTunnel?: boolean;
+  revokedBootstrapCount?: number;
+  invalidatedSessionCount?: number;
+}
+
 interface TunnelProviderModeDescriptor {
   key: TunnelMode;
   label: string;
@@ -318,6 +334,15 @@ export const TunnelSettings: React.FC = () => {
       return false;
     }
     return activeTunnelMode === tunnelMode;
+  }, [activeTunnelMode, state, tunnelInfo, tunnelMode]);
+  const willReplaceActiveTunnel = React.useMemo(() => {
+    if (!tunnelInfo || state !== 'active') {
+      return false;
+    }
+    if (!activeTunnelMode) {
+      return false;
+    }
+    return activeTunnelMode !== tunnelMode;
   }, [activeTunnelMode, state, tunnelInfo, tunnelMode]);
   const suggestedConnectorPort = React.useMemo(() => {
     if (typeof localPort === 'number' && Number.isFinite(localPort) && localPort > 0) {
@@ -717,7 +742,7 @@ export const TunnelSettings: React.FC = () => {
           ...(tunnelMode === 'managed-local' && managedLocalConfigPath ? { configPath: managedLocalConfigPath } : {}),
         }),
       });
-      const data = await res.json();
+      const data = (await res.json()) as TunnelStartResponse;
 
       if (!res.ok || !data.ok) {
         if (tunnelMode === 'managed-remote' && typeof data.error === 'string' && data.error.includes('Managed remote tunnel token is required')) {
@@ -732,8 +757,16 @@ export const TunnelSettings: React.FC = () => {
         return;
       }
 
+      const startedUrl = typeof data.url === 'string' ? data.url : '';
+      if (!startedUrl) {
+        setState('error');
+        setErrorMessage('Tunnel started but no public URL was returned');
+        toast.error('Tunnel started but no public URL was returned');
+        return;
+      }
+
       setTunnelInfo({
-        url: data.url,
+        url: startedUrl,
         connectUrl: typeof data.connectUrl === 'string' ? data.connectUrl : null,
         bootstrapExpiresAt: typeof data.bootstrapExpiresAt === 'number' ? data.bootstrapExpiresAt : null,
       });
@@ -753,7 +786,13 @@ export const TunnelSettings: React.FC = () => {
         setTunnelMode(toUiTunnelMode(data.mode));
       }
       setState('active');
-      toast.success('Tunnel link ready');
+      if (data.replacedTunnel) {
+        const revokedBootstrapCount = typeof data.revokedBootstrapCount === 'number' ? data.revokedBootstrapCount : 0;
+        const invalidatedSessionCount = typeof data.invalidatedSessionCount === 'number' ? data.invalidatedSessionCount : 0;
+        toast.warning(`Replaced previous tunnel: revoked ${revokedBootstrapCount} link${revokedBootstrapCount === 1 ? '' : 's'}, invalidated ${invalidatedSessionCount} session${invalidatedSessionCount === 1 ? '' : 's'}.`);
+      } else {
+        toast.success('Tunnel link ready');
+      }
     } catch {
       setState('error');
       setErrorMessage('Failed to start tunnel');
@@ -1159,7 +1198,7 @@ export const TunnelSettings: React.FC = () => {
                     Quick Tunnel is best effort and Cloudflare does not guarantee uptime.
                   </p>
                   <p className="typography-meta mt-1 text-[var(--status-warning)]">
-                    For more reliable long-lived access, switch to Managed Remote Tunnel mode.
+                    For more reliable long-lived access, switch to Managed Remote or Managed Local tunnel mode.
                   </p>
                 </div>
               </div>
@@ -1513,6 +1552,17 @@ export const TunnelSettings: React.FC = () => {
                       ))}
                     </SelectContent>
                   </Select>
+                </div>
+              )}
+
+              {willReplaceActiveTunnel && (
+                <div className="rounded-lg border border-[var(--status-warning-border)] bg-[var(--status-warning-background)] p-3">
+                  <div className="flex items-start gap-2">
+                    <RiErrorWarningLine className="mt-0.5 size-4 shrink-0 text-[var(--status-warning)]" />
+                    <p className="typography-meta text-[var(--status-warning)]">
+                      Starting this tunnel replaces the active tunnel and revokes existing connect links and remote sessions.
+                    </p>
+                  </div>
                 </div>
               )}
 
