@@ -74,6 +74,50 @@ function logStatus(status, message, detail) {
  */
 const isTTY = Boolean(process.stdout?.isTTY);
 
+function isJsonMode(options) {
+  return Boolean(options?.json);
+}
+
+function isQuietMode(options) {
+  return Boolean(options?.quiet);
+}
+
+function shouldRenderHumanOutput(options) {
+  return !isJsonMode(options) && !isQuietMode(options);
+}
+
+function canPrompt(options) {
+  return shouldRenderHumanOutput(options) && isTTY;
+}
+
+function createSpinner(options) {
+  return canPrompt(options) ? spinner() : null;
+}
+
+async function createProgress(options, config) {
+  return canPrompt(options) ? progress(config) : null;
+}
+
+function printJson(payload) {
+  const base = payload && typeof payload === 'object' && !Array.isArray(payload)
+    ? { ...payload }
+    : { data: payload };
+
+  const messages = Array.isArray(base.messages) ? base.messages : undefined;
+  const hasWarning = Boolean(messages?.some((entry) => entry?.level === 'warning'));
+  const hasError = Boolean(messages?.some((entry) => entry?.level === 'error'));
+  const normalizedStatus = base.status === 'ok' || base.status === 'warning' || base.status === 'error'
+    ? base.status
+    : (hasError ? 'error' : (hasWarning ? 'warning' : 'ok'));
+
+  const output = {
+    status: normalizedStatus,
+    ...base,
+  };
+
+  process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
+}
+
 export {
   intro,
   outro,
@@ -89,6 +133,13 @@ export {
   cancel,
   isCancel,
   isTTY,
+  isJsonMode,
+  isQuietMode,
+  shouldRenderHumanOutput,
+  canPrompt,
+  createSpinner,
+  createProgress,
+  printJson,
   formatProviderWithIcon,
   logStatus,
 };

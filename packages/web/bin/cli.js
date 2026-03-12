@@ -9,10 +9,17 @@ import { spawn, spawnSync } from 'child_process';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { cloudflareTunnelProviderCapabilities } from '../server/lib/tunnels/providers/cloudflare.js';
 import {
-  intro as clackIntro, outro as clackOutro, log as clackLog, note as clackNote,
-  box as clackBox, progress as clackProgress, spinner as clackSpinner, confirm as clackConfirm,
+  intro as clackIntro, outro as clackOutro, log as clackLog,
+  box as clackBox, confirm as clackConfirm,
   select as clackSelect, text as clackText, password as clackPassword, cancel as clackCancel,
-  isCancel as clackIsCancel, isTTY as clackIsTTY,
+  isCancel as clackIsCancel,
+  isJsonMode,
+  isQuietMode,
+  shouldRenderHumanOutput,
+  canPrompt,
+  createSpinner,
+  createProgress,
+  printJson,
   logStatus, formatProviderWithIcon as clackFormatProviderWithIcon,
 } from './cli-output.js';
 
@@ -26,6 +33,7 @@ const LOG_ROTATE_KEEP = 5;
 const TUNNEL_PROFILES_VERSION = 1;
 const TUNNEL_PROFILES_FILE_NAME = 'tunnel-profiles.json';
 const LEGACY_CLOUDFLARE_MANAGED_REMOTE_FILE_NAME = 'cloudflare-managed-remote-tunnels.json';
+const TUNNEL_CLI_STATE_FILE_NAME = 'tunnel-cli-state.json';
 const TUNNEL_BOOTSTRAP_TTL_DEFAULT_MS = 30 * 60 * 1000;
 const TUNNEL_BOOTSTRAP_TTL_MIN_MS = 60 * 1000;
 const TUNNEL_BOOTSTRAP_TTL_MAX_MS = 24 * 60 * 60 * 1000;
@@ -51,6 +59,7 @@ const PACKAGE_JSON = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'pack
 const DEFAULT_TUNNEL_PROVIDER_CAPABILITIES = [cloudflareTunnelProviderCapabilities];
 
 let onCancelCleanup = null;
+let activeCommandOptions = null;
 
 function setCancelCleanup(handler) {
   onCancelCleanup = typeof handler === 'function' ? handler : null;
@@ -59,21 +68,8 @@ function setCancelCleanup(handler) {
 const HAS_PLAIN_FLAG = process.argv.includes('--plain');
 const STYLE_ENABLED = process.stdout.isTTY && process.env.NO_COLOR !== '1' && !HAS_PLAIN_FLAG;
 const ANSI = {
-  reset: '\x1b[0m',
   bold: '\x1b[1m',
   unbold: '\x1b[22m',
-  dim: '\x1b[90m',
-  info: '\x1b[94m',
-  success: '\x1b[92m',
-  warning: '\x1b[93m',
-  error: '\x1b[91m',
-};
-
-const STATUS_SYMBOL = {
-  success: '✓',
-  neutral: '○',
-  warning: '⚠',
-  error: '✗',
 };
 
 // Browser-unsafe ports (Fetch/Chromium restricted ports).
@@ -104,12 +100,6 @@ class TunnelCliError extends Error {
 }
 
 
-
-function color(text, tone = 'reset') {
-  if (!STYLE_ENABLED) return text;
-  const start = ANSI[tone] || ANSI.reset;
-  return `${start}${text}${ANSI.reset}`;
-}
 
 function boldText(text) {
   if (!STYLE_ENABLED) return text;
@@ -336,15 +326,33 @@ function buildTunnelStartReplayCommand({
   return parts.join(' ');
 }
 
+function buildTunnelProfileAddCommand({ provider, hostname }) {
+  const parts = [
+    'openchamber',
+    'tunnel',
+    'profile',
+    'add',
+    '--provider',
+    shellQuote(provider || 'cloudflare'),
+    '--mode',
+    'managed-remote',
+    '--name',
+    '<name>',
+    '--hostname',
+    shellQuote(hostname || '<hostname>'),
+    '--token',
+    '<token>',
+  ];
+  return parts.join(' ');
+}
+
 async function resolveTunnelTtlOverrides(options) {
   let connectTtlRaw = typeof options.connectTtl === 'string' ? options.connectTtl : undefined;
   let sessionTtlRaw = typeof options.sessionTtl === 'string' ? options.sessionTtl : undefined;
 
   const shouldPrompt = !connectTtlRaw
     && !sessionTtlRaw
-    && !options.json
-    && !options.quiet
-    && clackIsTTY;
+    && canPrompt(options);
 
   if (shouldPrompt) {
     const connectChoice = await clackSelect({
@@ -473,27 +481,6 @@ function findClosestMatch(input, candidates, maxDistance = 3) {
   return bestDistance <= maxDistance ? bestCandidate : null;
 }
 
-function printSectionStart(title) {
-  console.log(`┌  ${title}`);
-  console.log('│');
-}
-
-function printSectionEnd(text) {
-  console.log(`└  ${text}`);
-}
-
-function printListItem({ status = 'neutral', line, detail }) {
-  const symbol = STATUS_SYMBOL[status] || STATUS_SYMBOL.neutral;
-  const tone = status === 'success' ? 'success' : status === 'warning' ? 'warning' : status === 'error' ? 'error' : 'info';
-  console.log(`${color('●', tone)}  ${color(symbol, tone)} ${line}`);
-  if (detail) {
-    console.log(`│      ${color(detail, 'dim')}`);
-  }
-  console.log('│');
-}
-
-
-
 function importFromFilePath(filePath) {
   return import(pathToFileURL(filePath).href);
 }
@@ -551,6 +538,7 @@ function isTruthyEnv(value) {
 
 function shouldDisplayTunnelQr(options) {
   if (options?.json) return false;
+  if (options?.quiet) return false;
   if (options?.explicitQr === true) return options.qr === true;
   if (!process.stdout?.isTTY) return false;
   return !isTruthyEnv(process.env.CI);
@@ -1118,6 +1106,47 @@ function getLegacyCloudflareManagedRemoteFilePath() {
   return path.join(getDataDir(), LEGACY_CLOUDFLARE_MANAGED_REMOTE_FILE_NAME);
 }
 
+function getTunnelCliStateFilePath() {
+  return path.join(getDataDir(), TUNNEL_CLI_STATE_FILE_NAME);
+}
+
+function readTunnelCliState() {
+  const filePath = getTunnelCliStateFilePath();
+  try {
+    const raw = fs.readFileSync(filePath, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return {};
+    }
+    return parsed;
+  } catch {
+    return {};
+  }
+}
+
+function readLastManagedLocalConfigPath() {
+  const state = readTunnelCliState();
+  if (typeof state.lastManagedLocalConfigPath !== 'string') {
+    return '';
+  }
+  return state.lastManagedLocalConfigPath.trim();
+}
+
+function writeLastManagedLocalConfigPath(configPath) {
+  if (typeof configPath !== 'string' || configPath.trim().length === 0) {
+    return;
+  }
+  const filePath = getTunnelCliStateFilePath();
+  const current = readTunnelCliState();
+  const next = {
+    ...current,
+    lastManagedLocalConfigPath: configPath.trim(),
+    updatedAt: Date.now(),
+  };
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, JSON.stringify(next, null, 2), 'utf8');
+}
+
 function normalizeProfileProvider(value) {
   if (typeof value !== 'string') return '';
   return value.trim().toLowerCase();
@@ -1141,6 +1170,14 @@ function normalizeProfileHostname(value) {
 function normalizeProfileToken(value) {
   if (typeof value !== 'string') return '';
   return value.trim();
+}
+
+function suggestProfileNameFromHostname(hostname) {
+  const normalizedHost = normalizeProfileHostname(hostname);
+  if (!normalizedHost) return 'prod-main';
+  const firstLabel = normalizedHost.split('.')[0] || normalizedHost;
+  const sanitized = firstLabel.replace(/[^a-zA-Z0-9-_]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+  return sanitized || 'prod-main';
 }
 
 function maskToken(token) {
@@ -1524,14 +1561,19 @@ function searchPathFor(command) {
   return null;
 }
 
-async function checkOpenCodeCLI() {
+async function checkOpenCodeCLI(onNotice) {
   if (process.env.OPENCODE_BINARY) {
     const override = resolveExplicitBinary(process.env.OPENCODE_BINARY);
     if (override) {
       process.env.OPENCODE_BINARY = override;
       return override;
     }
-    console.warn(`Warning: OPENCODE_BINARY="${process.env.OPENCODE_BINARY}" is not an executable file. Falling back to PATH lookup.`);
+    const message = `OPENCODE_BINARY="${process.env.OPENCODE_BINARY}" is not an executable file. Falling back to PATH lookup.`;
+    if (typeof onNotice === 'function') {
+      onNotice({ level: 'warning', code: 'OPENCODE_BINARY_INVALID', message });
+    } else {
+      console.warn(`Warning: ${message}`);
+    }
   }
 
   const resolvedFromPath = searchPathFor('opencode');
@@ -1540,10 +1582,10 @@ async function checkOpenCodeCLI() {
     return resolvedFromPath;
   }
 
-  console.error('Error: Unable to locate the opencode CLI on PATH.');
-  console.error(`Current PATH: ${process.env.PATH || '<empty>'}`);
-  console.error('Ensure the CLI is installed and reachable, or set OPENCODE_BINARY to its full path.');
-  process.exit(1);
+  throw new Error(
+    `Unable to locate the opencode CLI on PATH (${process.env.PATH || '<empty>'}). ` +
+    'Ensure the CLI is installed and reachable, or set OPENCODE_BINARY to its full path.'
+  );
 }
 
 async function isPortAvailable(port) {
@@ -1561,7 +1603,7 @@ async function isPortAvailable(port) {
   });
 }
 
-async function resolveAvailablePort(desiredPort, explicitPort = false) {
+async function resolveAvailablePort(desiredPort, explicitPort = false, onNotice) {
   const startPort = Number.isFinite(desiredPort) ? Math.trunc(desiredPort) : DEFAULT_PORT;
   if (explicitPort) {
     return startPort;
@@ -1571,12 +1613,22 @@ async function resolveAvailablePort(desiredPort, explicitPort = false) {
   }
 
   const occupant = await fetchSystemInfoFromPort(startPort);
+  let message;
   if (occupant?.runtime === 'desktop') {
-    console.warn(`Port ${startPort} is used by OpenChamber Desktop; using a free port`);
+    message = `Port ${startPort} is used by OpenChamber Desktop; using a free port`;
   } else if (occupant?.runtime) {
-    console.warn(`Port ${startPort} is used by an existing OpenChamber instance; using a free port`);
+    message = `Port ${startPort} is used by an existing OpenChamber instance; using a free port`;
   } else {
-    console.warn(`Port ${startPort} in use; using a free port`);
+    message = `Port ${startPort} in use; using a free port`;
+  }
+  if (typeof onNotice === 'function' && message) {
+    onNotice({
+      level: 'warning',
+      code: 'PORT_REASSIGNED',
+      message,
+    });
+  } else if (message) {
+    console.warn(message);
   }
   return 0;
 }
@@ -1601,11 +1653,16 @@ function readPidFile(pidFilePath) {
   }
 }
 
-function writePidFile(pidFilePath, pid) {
+function writePidFile(pidFilePath, pid, onNotice) {
   try {
     fs.writeFileSync(pidFilePath, String(pid));
   } catch (error) {
-    console.warn(`Warning: Could not write PID file: ${error.message}`);
+    const message = `Could not write PID file: ${error.message}`;
+    if (typeof onNotice === 'function') {
+      onNotice({ level: 'warning', code: 'PID_FILE_WRITE_FAILED', message });
+    } else {
+      console.warn(`Warning: ${message}`);
+    }
   }
 }
 
@@ -1626,16 +1683,22 @@ function readInstanceOptions(instanceFilePath) {
   }
 }
 
-function writeInstanceOptions(instanceFilePath, options) {
+function writeInstanceOptions(instanceFilePath, options, onNotice) {
   try {
     const toStore = {
       port: options.port,
       uiPassword: typeof options.uiPassword === 'string' ? options.uiPassword : undefined,
       hasUiPassword: typeof options.uiPassword === 'string',
+      startedAt: Number.isFinite(options.startedAt) ? options.startedAt : Date.now(),
     };
     fs.writeFileSync(instanceFilePath, JSON.stringify(toStore, null, 2));
   } catch (error) {
-    console.warn(`Warning: Could not write instance file: ${error.message}`);
+    const message = `Could not write instance file: ${error.message}`;
+    if (typeof onNotice === 'function') {
+      onNotice({ level: 'warning', code: 'INSTANCE_FILE_WRITE_FAILED', message });
+    } else {
+      console.warn(`Warning: ${message}`);
+    }
   }
 }
 
@@ -1865,11 +1928,16 @@ async function discoverRunningInstances() {
       }
       const instanceFilePath = path.join(tmpDir, `openchamber-${port}.json`);
       let mtime = 0;
+      let startedAt = 0;
       try {
         mtime = fs.statSync(pidFilePath).mtimeMs;
       } catch {
       }
-      instances.push({ port, pid, pidFilePath, instanceFilePath, mtime });
+      const storedOptions = readInstanceOptions(instanceFilePath);
+      if (Number.isFinite(storedOptions?.startedAt)) {
+        startedAt = storedOptions.startedAt;
+      }
+      instances.push({ port, pid, pidFilePath, instanceFilePath, mtime, startedAt });
     }
   } catch {
   }
@@ -1879,7 +1947,13 @@ async function discoverRunningInstances() {
 
 function getLatestInstance(instances) {
   if (!instances.length) return null;
-  return [...instances].sort((a, b) => b.mtime - a.mtime)[0];
+  return [...instances].sort((a, b) => {
+    const startedDelta = (b.startedAt || 0) - (a.startedAt || 0);
+    if (startedDelta !== 0) return startedDelta;
+    const mtimeDelta = (b.mtime || 0) - (a.mtime || 0);
+    if (mtimeDelta !== 0) return mtimeDelta;
+    return b.port - a.port;
+  })[0];
 }
 
 async function fetchTunnelProvidersFromPort(port, fetchImpl = globalThis.fetch) {
@@ -2143,6 +2217,31 @@ function formatTunnelStatusLine(statusBody, port) {
   };
 }
 
+function formatModeRequirements(mode) {
+  const requires = Array.isArray(mode?.requires) ? mode.requires.filter(Boolean) : [];
+  if ((mode?.key || '') === 'managed-local') {
+    return 'config-path (or default cloudflared config)';
+  }
+  if (requires.length === 0) {
+    return 'none';
+  }
+  return requires.join(', ');
+}
+
+function annotateTunnelProvidersForOutput(providers) {
+  if (!Array.isArray(providers)) return providers;
+  return providers.map((provider) => {
+    const modes = Array.isArray(provider?.modes) ? provider.modes : [];
+    return {
+      ...provider,
+      modes: modes.map((mode) => ({
+        ...mode,
+        displayRequires: formatModeRequirements(mode),
+      })),
+    };
+  });
+}
+
 function readTailLines(filePath, lineCount = DEFAULT_TAIL_LINES) {
   if (!fs.existsSync(filePath)) {
     return [];
@@ -2203,15 +2302,15 @@ async function handleTunnelProfileSubcommand(options, action) {
   const store = ensureTunnelProfilesMigrated();
 
   if (!sub) {
-    if (options.json) {
-      console.log(JSON.stringify({
+    if (isJsonMode(options)) {
+      printJson({
         command: 'tunnel profile',
         subcommands: ['list', 'show', 'add', 'remove'],
-      }, null, 2));
+      });
       return;
     }
 
-    if (!options.quiet) {
+    if (!isQuietMode(options)) {
       clackIntro('Tunnel Profile');
       logStatus('info', 'Available subcommands', 'list, show, add, remove');
       clackLog.step('List profiles: `openchamber tunnel profile list`');
@@ -2228,18 +2327,23 @@ async function handleTunnelProfileSubcommand(options, action) {
     const profiles = providerFilter
       ? store.profiles.filter((entry) => entry.provider === providerFilter)
       : store.profiles;
-    if (options.json) {
-      console.log(JSON.stringify({ profiles: redactProfilesForOutput(profiles, options.showSecrets) }, null, 2));
+    if (isJsonMode(options)) {
+      printJson({ profiles: redactProfilesForOutput(profiles, options.showSecrets) });
       return;
     }
 
-    if (!options.quiet) {
-      clackIntro('Tunnel Profiles');
+    if (isQuietMode(options)) {
       for (const profile of profiles) {
-        logStatus('success', `${profile.name} (${profile.provider}/${profile.mode})`, `${profile.hostname} ${formatProfileTokenStatus(profile, options.showSecrets)}`);
+        process.stdout.write(`${profile.name} ${profile.provider}/${profile.mode} ${profile.hostname}\n`);
       }
-      clackOutro(`${profiles.length} profile(s)`);
+      return;
     }
+
+    clackIntro('Tunnel Profiles');
+    for (const profile of profiles) {
+      logStatus('success', `${profile.name} (${profile.provider}/${profile.mode})`, `${profile.hostname} ${formatProfileTokenStatus(profile, options.showSecrets)}`);
+    }
+    clackOutro(`${profiles.length} profile(s)`);
     return;
   }
 
@@ -2252,11 +2356,11 @@ async function handleTunnelProfileSubcommand(options, action) {
     if (!profile) {
       throw new Error(error);
     }
-    if (options.json) {
-      console.log(JSON.stringify({ profile: redactProfileForOutput(profile, options.showSecrets) }, null, 2));
+    if (isJsonMode(options)) {
+      printJson({ profile: redactProfileForOutput(profile, options.showSecrets) });
       return;
     }
-    if (!options.quiet) {
+    if (!isQuietMode(options)) {
       clackIntro('Tunnel Profile');
       logStatus('success', `${profile.name} (${profile.provider}/${profile.mode})`, `${profile.hostname} ${formatProfileTokenStatus(profile, options.showSecrets)}`);
       clackOutro('show complete');
@@ -2265,19 +2369,99 @@ async function handleTunnelProfileSubcommand(options, action) {
   }
 
   if (sub === 'add') {
-    const provider = normalizeProfileProvider(options.provider);
-    const mode = normalizeProfileMode(options.mode);
-    const name = normalizeProfileName(options.name);
-    const hostname = normalizeProfileHostname(options.hostname);
+    let provider = normalizeProfileProvider(options.provider);
+    let mode = normalizeProfileMode(options.mode);
+    let name = normalizeProfileName(options.name);
+    let hostname = normalizeProfileHostname(options.hostname);
     const resolvedTokenValue = resolveToken(options);
     let token = normalizeProfileToken(resolvedTokenValue);
+
+    if (canPrompt(options)) {
+      if (!provider) {
+        const providerResult = await resolveTunnelProviders(options, {
+          readPorts: async () => (await discoverRunningInstances()).map((entry) => entry.port),
+        });
+        const providerOptions = (Array.isArray(providerResult.providers) ? providerResult.providers : [])
+          .map((entry) => normalizeProfileProvider(entry?.provider))
+          .filter(Boolean)
+          .map((providerId) => ({ value: providerId, label: clackFormatProviderWithIcon(providerId) }));
+
+        if (providerOptions.length === 1) {
+          provider = providerOptions[0].value;
+        } else if (providerOptions.length > 1) {
+          const selectedProvider = await clackSelect({
+            message: 'Select tunnel provider',
+            options: providerOptions,
+          });
+          if (clackIsCancel(selectedProvider)) {
+            clackCancel('Profile add cancelled.');
+            return;
+          }
+          provider = normalizeProfileProvider(selectedProvider);
+        }
+      }
+
+      if (!mode) {
+        mode = 'managed-remote';
+      }
+
+      if (!name) {
+        const enteredName = await clackText({
+          message: 'Profile name (Enter to accept/edit)',
+          placeholder: 'prod-main',
+          initialValue: 'prod-main',
+          validate(value) {
+            return normalizeProfileName(value).length > 0 ? undefined : 'Profile name is required.';
+          },
+        });
+        if (clackIsCancel(enteredName)) {
+          clackCancel('Profile add cancelled.');
+          return;
+        }
+        name = normalizeProfileName(enteredName);
+      }
+
+      const existingProfile = provider && name
+        ? store.profiles.find((entry) => entry.provider === provider && entry.name.toLowerCase() === name.toLowerCase())
+        : null;
+
+      if (!hostname) {
+        const enteredHostname = await clackText({
+          message: 'Tunnel hostname (Enter to accept/edit)',
+          placeholder: existingProfile?.hostname || 'app.example.com',
+          initialValue: existingProfile?.hostname || 'app.example.com',
+          validate(value) {
+            return normalizeProfileHostname(value).length > 0 ? undefined : 'Hostname is required.';
+          },
+        });
+        if (clackIsCancel(enteredHostname)) {
+          clackCancel('Profile add cancelled.');
+          return;
+        }
+        hostname = normalizeProfileHostname(enteredHostname);
+      }
+
+      if (!token && existingProfile?.token) {
+        const useExistingToken = await clackConfirm({
+          message: `Reuse saved token for profile '${existingProfile.name}'?`,
+          initialValue: true,
+        });
+        if (clackIsCancel(useExistingToken)) {
+          clackCancel('Profile add cancelled.');
+          return;
+        }
+        if (useExistingToken) {
+          token = existingProfile.token;
+        }
+      }
+    }
 
     if (!provider || !mode || !name || !hostname) {
       throw new Error('`tunnel profile add` requires --provider, --mode managed-remote, --name, and --hostname.');
     }
 
     if (!token) {
-      if (!options.json && !options.quiet && clackIsTTY) {
+      if (canPrompt(options)) {
         const entered = await clackPassword({
           message: `Enter tunnel token for profile '${name}'`,
         });
@@ -2300,7 +2484,7 @@ async function handleTunnelProfileSubcommand(options, action) {
     );
 
     if (existingIndex >= 0 && !options.force && !options.dryRun) {
-      if (!options.json && !options.quiet && clackIsTTY) {
+      if (canPrompt(options)) {
         const shouldOverwrite = await clackConfirm({
           message: `Profile '${name}' already exists for provider '${provider}'. Overwrite?`,
         });
@@ -2320,9 +2504,9 @@ async function handleTunnelProfileSubcommand(options, action) {
         action: existingIndex >= 0 ? 'overwrite' : 'create',
         profile: redactProfileForOutput({ name, provider, mode, hostname, token }, options.showSecrets),
       };
-      if (options.json) {
-        console.log(JSON.stringify(dryRunResult, null, 2));
-      } else if (!options.quiet) {
+      if (isJsonMode(options)) {
+        printJson(dryRunResult);
+      } else if (!isQuietMode(options)) {
         clackIntro('Tunnel Profile Add (dry-run)');
         logStatus('info', `Would ${existingIndex >= 0 ? 'overwrite' : 'create'}: ${name} (${provider}/${mode})`, `${hostname} ${formatProfileTokenStatus({ token }, options.showSecrets)}`);
         clackOutro('dry-run complete (no changes applied)');
@@ -2359,16 +2543,18 @@ async function handleTunnelProfileSubcommand(options, action) {
     writeManagedRemotePairsToDiskFromProfiles(persisted);
     const added = persisted.profiles.find((entry) => entry.provider === provider && entry.name.toLowerCase() === name.toLowerCase());
 
-    if (options.json) {
-      console.log(JSON.stringify({ ok: true, profile: redactProfileForOutput(added, options.showSecrets) }, null, 2));
+    if (isJsonMode(options)) {
+      printJson({ ok: true, profile: redactProfileForOutput(added, options.showSecrets) });
       return;
     }
 
-    if (!options.quiet) {
-      clackIntro('Tunnel Profile Saved');
+    if (!isQuietMode(options)) {
+      console.log('');
+      clackIntro(boldText('Tunnel Profile Saved'));
       logStatus('success', `${added.name} (${added.provider}/${added.mode})`, `${added.hostname} ${formatProfileTokenStatus(added, options.showSecrets)}`);
       clackOutro('save complete');
-      clackNote(`start this profile with \`openchamber tunnel start --profile ${added.name}\``, 'Hint');
+      logStatus('info', '[START_PROFILE]', `openchamber tunnel start --profile ${added.name}`);
+      clackOutro('');
     }
     return;
   }
@@ -2388,12 +2574,12 @@ async function handleTunnelProfileSubcommand(options, action) {
     writeTunnelProfilesToDisk(persisted);
     writeManagedRemotePairsToDiskFromProfiles(persisted);
 
-    if (options.json) {
-      console.log(JSON.stringify({ ok: true, removed: redactProfileForOutput(profile, options.showSecrets) }, null, 2));
+    if (isJsonMode(options)) {
+      printJson({ ok: true, removed: redactProfileForOutput(profile, options.showSecrets) });
       return;
     }
 
-    if (!options.quiet) {
+    if (!isQuietMode(options)) {
       clackIntro('Tunnel Profile Removed');
       logStatus('success', `${profile.name} (${profile.provider}/${profile.mode})`, profile.hostname);
       clackOutro('remove complete');
@@ -2412,8 +2598,38 @@ async function handleTunnelProfileSubcommand(options, action) {
 
 const commands = {
   async serve(options) {
+    const showOutput = shouldRenderHumanOutput(options);
+    const jsonMessages = [];
+    const emitNotice = (notice) => {
+      if (!notice || typeof notice !== 'object' || typeof notice.message !== 'string') return;
+      const level = notice.level === 'error' ? 'error' : (notice.level === 'warning' ? 'warning' : 'info');
+
+      if (isJsonMode(options)) {
+        jsonMessages.push({
+          level,
+          code: notice.code,
+          message: notice.message,
+        });
+        return;
+      }
+
+      if (showOutput) {
+        logStatus(level, notice.message);
+        return;
+      }
+
+      if (!isQuietMode(options)) {
+        const prefix = level === 'warning' ? 'Warning' : level === 'error' ? 'Error' : 'Info';
+        const line = `${prefix}: ${notice.message}`;
+        if (level === 'error') {
+          console.error(line);
+        } else {
+          console.warn(line);
+        }
+      }
+    };
     const explicitPort = options.explicitPort === true;
-    const targetPort = await resolveAvailablePort(options.port, explicitPort);
+    const targetPort = await resolveAvailablePort(options.port, explicitPort, emitNotice);
 
     if (targetPort !== 0 && !options.suppressUnsafePortWarning) {
       assertSafeBrowserPort(targetPort, { context: 'OpenChamber serve' });
@@ -2440,7 +2656,7 @@ const commands = {
       }
     }
 
-    const opencodeBinary = await checkOpenCodeCLI();
+    const opencodeBinary = await checkOpenCodeCLI(emitNotice);
     const serverPath = path.join(__dirname, '..', 'server', 'index.js');
     const preferredRuntime = getPreferredServerRuntime();
     const runtimeBin = preferredRuntime === 'bun' ? BUN_BIN : process.execPath;
@@ -2453,7 +2669,19 @@ const commands = {
 
     const effectiveUiPassword = hasUiPasswordConfigured(options.uiPassword) ? options.uiPassword : undefined;
     if (!effectiveUiPassword && !options.suppressUiPasswordWarning) {
-      console.warn('Warning: OPENCHAMBER_UI_PASSWORD is not set; browser UI is unsecured. Use --ui-password or OPENCHAMBER_UI_PASSWORD.');
+      const warningLine = 'OPENCHAMBER_UI_PASSWORD is not set';
+      const warningDetail = 'browser UI is unsecured. Use --ui-password or OPENCHAMBER_UI_PASSWORD.';
+      if (showOutput) {
+        logStatus('warning', warningLine, warningDetail);
+      } else if (isJsonMode(options)) {
+        emitNotice({
+          level: 'warning',
+          code: 'UI_PASSWORD_MISSING',
+          message: `${warningLine}; ${warningDetail}`,
+        });
+      } else if (!isQuietMode(options)) {
+        console.warn(`Warning: ${warningLine}; ${warningDetail}`);
+      }
     }
     const serverArgs = [serverPath, '--port', String(targetPort)];
     if (effectiveUiPassword) {
@@ -2525,26 +2753,61 @@ const commands = {
 
     const pidFilePath = await getPidFilePath(resolvedPort);
     const instanceFilePath = await getInstanceFilePath(resolvedPort);
-    writePidFile(pidFilePath, child.pid);
+    writePidFile(pidFilePath, child.pid, emitNotice);
     writeInstanceOptions(instanceFilePath, {
       port: resolvedPort,
       uiPassword: effectiveUiPassword,
-    });
+    }, emitNotice);
 
-    if (!options.suppressStartupSummary) {
-      console.log(`OpenChamber started in daemon mode on port ${resolvedPort}`);
-      console.log(`PID: ${child.pid}`);
-      console.log(`Visit: http://localhost:${resolvedPort}`);
-      console.log(`Logs: run \`openchamber logs -p ${resolvedPort}\``);
+    const serveResult = {
+      port: resolvedPort,
+      pid: child.pid,
+      url: buildLocalUrl(resolvedPort, '/'),
+      logs: `openchamber logs -p ${resolvedPort}`,
+    };
+
+    if (isJsonMode(options)) {
+      printJson({ ...serveResult, messages: jsonMessages });
+      return resolvedPort;
+    }
+
+    if (isQuietMode(options)) {
+      process.stdout.write(`${resolvedPort}\n`);
+      return resolvedPort;
+    }
+
+    if (!options.suppressStartupSummary && showOutput) {
+      clackIntro('OpenChamber Started');
+      logStatus('success', `port ${serveResult.port} (PID: ${serveResult.pid})`);
+      logStatus('info', `visit: ${serveResult.url}`);
+      logStatus('info', `logs: ${serveResult.logs}`);
+      clackOutro('daemon running');
     }
 
     return resolvedPort;
   },
 
   async stop(options) {
+    const showOutput = shouldRenderHumanOutput(options);
+    const jsonResults = [];
+    const finish = (text) => {
+      if (!showOutput) return;
+      clackOutro(text);
+    };
+
+    if (showOutput) {
+      clackIntro('OpenChamber Stop');
+    }
+
     let runningInstances = await discoverRunningInstances();
     if (runningInstances.length === 0) {
-      console.log('No running OpenChamber instances found');
+      if (isJsonMode(options)) {
+        printJson({ stoppedCount: 0, results: jsonResults });
+      }
+      if (showOutput) {
+        logStatus('info', 'No running OpenChamber instances found');
+        finish('nothing to stop');
+      }
       return;
     }
 
@@ -2553,12 +2816,21 @@ const commands = {
       if (runningInstances.length === 0) {
         const systemInfo = await fetchSystemInfoFromPort(options.port);
         if (systemInfo?.runtime === 'desktop') {
-          console.log(`Port ${options.port} is used by OpenChamber Desktop app and cannot be stopped with this command.`);
+          jsonResults.push({ port: options.port, runtime: 'desktop', stopped: false, reason: 'desktop-managed' });
+          if (isJsonMode(options)) {
+            printJson({ stoppedCount: 0, results: jsonResults, messages: [{ level: 'warning', code: 'DESKTOP_MANAGED_PORT', message: `Port ${options.port} is managed by OpenChamber Desktop and cannot be stopped with this command.` }] });
+          }
+          if (showOutput) {
+            logStatus('warning', `port ${options.port} is managed by OpenChamber Desktop`, 'cannot be stopped with this command');
+            finish('no changes applied');
+          }
           return;
         }
 
         if (systemInfo?.runtime) {
-          console.log(`Found unmanaged OpenChamber instance on port ${options.port}. Attempting shutdown...`);
+          if (showOutput) {
+            logStatus('info', `found unmanaged OpenChamber instance on port ${options.port}`, 'attempting shutdown');
+          }
           const requested = await requestServerShutdown(options.port);
 
           if (Number.isFinite(systemInfo.pid) && isProcessRunning(systemInfo.pid)) {
@@ -2578,22 +2850,62 @@ const commands = {
 
           const stopped = await isPortAvailable(options.port);
           if (stopped) {
-            console.log(`Stopped OpenChamber on port ${options.port}`);
+            jsonResults.push({ port: options.port, runtime: 'unmanaged', stopped: true });
+            if (isJsonMode(options)) {
+              printJson({ stoppedCount: 1, results: jsonResults });
+            }
+            if (showOutput) {
+              logStatus('success', `stopped OpenChamber on port ${options.port}`);
+              finish('stop complete');
+            }
           } else if (requested) {
-            console.log(`Shutdown was requested for port ${options.port}, but the port is still occupied.`);
+            jsonResults.push({ port: options.port, runtime: 'unmanaged', stopped: false, reason: 'shutdown-requested-port-busy' });
+            if (isJsonMode(options)) {
+              printJson({
+                status: 'warning',
+                stoppedCount: 0,
+                results: jsonResults,
+                messages: [{ level: 'warning', code: 'SHUTDOWN_PARTIAL', message: `Shutdown was requested for port ${options.port}, but the port is still occupied.` }],
+              });
+            }
+            if (showOutput) {
+              logStatus('warning', `shutdown requested on port ${options.port}`, 'port is still occupied');
+              finish('partial stop');
+            }
           } else {
-            console.log(`Could not stop OpenChamber on port ${options.port}.`);
+            jsonResults.push({ port: options.port, runtime: 'unmanaged', stopped: false, reason: 'stop-failed' });
+            if (isJsonMode(options)) {
+              printJson({
+                status: 'error',
+                stoppedCount: 0,
+                results: jsonResults,
+                messages: [{ level: 'error', code: 'STOP_FAILED', message: `Could not stop OpenChamber on port ${options.port}.` }],
+              });
+            }
+            if (showOutput) {
+              logStatus('error', `could not stop OpenChamber on port ${options.port}`);
+              finish('failed');
+            }
           }
           return;
         }
 
-        console.log(`No OpenChamber instance found running on port ${options.port}`);
+        jsonResults.push({ port: options.port, stopped: false, reason: 'not-found' });
+        if (isJsonMode(options)) {
+          printJson({ stoppedCount: 0, results: jsonResults });
+        }
+        if (showOutput) {
+          logStatus('info', `no OpenChamber instance found on port ${options.port}`);
+          finish('nothing to stop');
+        }
         return;
       }
     }
 
     for (const instance of runningInstances) {
-      console.log(`Stopping OpenChamber on port ${instance.port} (PID: ${instance.pid})...`);
+      if (showOutput) {
+        logStatus('info', `stopping port ${instance.port} (PID: ${instance.pid})`);
+      }
       try {
         await requestServerShutdown(instance.port);
         process.kill(instance.pid, 'SIGTERM');
@@ -2607,60 +2919,154 @@ const commands = {
         }
         removePidFile(instance.pidFilePath);
         removeInstanceFile(instance.instanceFilePath);
+        jsonResults.push({ port: instance.port, pid: instance.pid, stopped: true });
+        if (showOutput) {
+          logStatus('success', `stopped port ${instance.port}`);
+        }
       } catch (error) {
-        console.error(`Error stopping port ${instance.port}: ${error.message}`);
+        jsonResults.push({ port: instance.port, pid: instance.pid, stopped: false, reason: error instanceof Error ? error.message : String(error) });
+        if (showOutput) {
+          logStatus('error', `error stopping port ${instance.port}`, error.message);
+        } else if (!isJsonMode(options)) {
+          console.error(`Error stopping port ${instance.port}: ${error.message}`);
+        }
       }
     }
+
+    if (isJsonMode(options)) {
+      const stoppedCount = jsonResults.filter((entry) => entry.stopped).length;
+      const hasFailure = jsonResults.some((entry) => !entry.stopped);
+      printJson({
+        status: hasFailure ? 'warning' : 'ok',
+        stoppedCount,
+        results: jsonResults,
+      });
+      return;
+    }
+
+    finish(`${runningInstances.length} instance(s)`);
   },
 
   async restart(options) {
+    const showOutput = shouldRenderHumanOutput(options);
+    const restarted = [];
+
+    if (showOutput) {
+      clackIntro('OpenChamber Restart');
+    }
+
     let runningInstances = await discoverRunningInstances();
     if (runningInstances.length === 0) {
-      console.log('No running OpenChamber instances to restart');
+      if (isJsonMode(options)) {
+        printJson({ restartedCount: 0, results: restarted });
+      }
+      if (showOutput) {
+        logStatus('info', 'No running OpenChamber instances to restart');
+        clackOutro('nothing to restart');
+      }
       return;
     }
 
     if (options.explicitPort) {
       runningInstances = runningInstances.filter((entry) => entry.port === options.port);
       if (runningInstances.length === 0) {
-        console.log(`No OpenChamber instance found running on port ${options.port}`);
+        if (isJsonMode(options)) {
+          printJson({ restartedCount: 0, results: restarted });
+        }
+        if (showOutput) {
+          logStatus('warning', `no OpenChamber instance found on port ${options.port}`);
+          clackOutro('nothing to restart');
+        }
         return;
       }
     }
 
     for (const instance of runningInstances) {
       const storedOptions = readInstanceOptions(instance.instanceFilePath) || { port: instance.port };
-      await this.stop({ explicitPort: true, port: instance.port });
+      if (showOutput) {
+        logStatus('info', `restarting port ${instance.port}`);
+      }
+      await this.stop({ explicitPort: true, port: instance.port, quiet: true });
       await new Promise((resolve) => setTimeout(resolve, 500));
-      await this.serve({
+      const restartedPort = await this.serve({
         port: options.explicitPort ? options.port : (storedOptions.port || instance.port),
         explicitPort: true,
         uiPassword: options.explicitUiPassword ? options.uiPassword : storedOptions.uiPassword,
+        suppressStartupSummary: true,
+        quiet: true,
+        suppressUiPasswordWarning: true,
       });
+      restarted.push({ fromPort: instance.port, toPort: restartedPort, ok: true });
+      if (showOutput) {
+        logStatus('success', `port ${restartedPort} restarted`);
+      }
+    }
+
+    if (isJsonMode(options)) {
+      printJson({ restartedCount: restarted.length, results: restarted });
+      return;
+    }
+
+    if (showOutput) {
+      clackOutro(`${runningInstances.length} instance(s) restarted`);
     }
   },
 
-  async status() {
+  async status(options = {}) {
     const [runningInstances, desktopInstance] = await Promise.all([
       discoverRunningInstances(),
       discoverDesktopInstance(),
     ]);
 
-    if (runningInstances.length === 0 && !desktopInstance) {
-      console.log('OpenChamber Status:');
-      console.log('  Status: Stopped');
+    const desktopOnly = desktopInstance && !runningInstances.some((entry) => entry.port === desktopInstance.port)
+      ? {
+          runtime: 'desktop',
+          port: desktopInstance.port,
+          pid: Number.isFinite(desktopInstance.pid) ? desktopInstance.pid : null,
+        }
+      : null;
+
+    const cliInstances = runningInstances.map((instance) => ({
+      runtime: 'cli',
+      port: instance.port,
+      pid: instance.pid,
+    }));
+
+    const instances = desktopOnly ? [...cliInstances, desktopOnly] : cliInstances;
+    const runningCount = instances.length;
+
+    if (isJsonMode(options)) {
+      printJson({
+        state: runningCount > 0 ? 'running' : 'stopped',
+        runningCount,
+        instances,
+      });
       return;
     }
 
-    console.log('OpenChamber Status:');
-    for (const instance of runningInstances) {
-      console.log(`  ✓ Port ${instance.port} (PID: ${instance.pid})`);
+    if (isQuietMode(options)) {
+      process.stdout.write(`${runningCount > 0 ? 'running' : 'stopped'}\n`);
+      return;
     }
 
-    if (desktopInstance && !runningInstances.some((entry) => entry.port === desktopInstance.port)) {
-      const pidSuffix = Number.isFinite(desktopInstance.pid) ? ` (PID: ${desktopInstance.pid})` : '';
-      console.log(`  ✓ Desktop app on port ${desktopInstance.port}${pidSuffix}`);
+    clackIntro('OpenChamber Status');
+
+    if (runningCount === 0) {
+      logStatus('warning', 'stopped');
+      clackOutro('no running instances');
+      return;
     }
+
+    for (const instance of instances) {
+      const pidSuffix = Number.isFinite(instance.pid) ? ` (PID: ${instance.pid})` : '';
+      if (instance.runtime === 'desktop') {
+        logStatus('info', `desktop app on port ${instance.port}${pidSuffix}`);
+      } else {
+        logStatus('success', `port ${instance.port}${pidSuffix}`);
+      }
+    }
+
+    clackOutro(`${runningCount} running runtime(s)`);
   },
 
   async tunnel(options, subcommand, action) {
@@ -2675,8 +3081,20 @@ const commands = {
         const result = await resolveTunnelProviders(options, {
           readPorts: async () => (await discoverRunningInstances()).map((entry) => entry.port),
         });
-        if (options.json) {
-          console.log(JSON.stringify({ providers: result.providers, source: result.source }, null, 2));
+        if (isJsonMode(options)) {
+          printJson({ providers: annotateTunnelProvidersForOutput(result.providers), source: result.source });
+          return;
+        }
+        if (isQuietMode(options)) {
+          for (const provider of result.providers) {
+            const modes = Array.isArray(provider?.modes) ? provider.modes : [];
+            const providerId = provider?.provider || 'unknown';
+            process.stdout.write(`provider ${providerId} modes ${modes.length}\n`);
+            for (const mode of modes) {
+              const requires = formatModeRequirements(mode).replace(/,\s+/g, ',');
+              process.stdout.write(`mode ${mode?.key || 'unknown'} requires ${requires}\n`);
+            }
+          }
           return;
         }
         clackIntro('Tunnel Providers');
@@ -2685,9 +3103,7 @@ const commands = {
           clackLog.success(`${clackFormatProviderWithIcon(provider.provider)} — ${modes.length} mode(s)`);
           for (const mode of modes) {
             const label = mode.label || mode.key;
-            const requires = Array.isArray(mode.requires) && mode.requires.length > 0
-              ? mode.requires.join(', ')
-              : 'none';
+            const requires = formatModeRequirements(mode);
             clackLog.step(`${mode.key} — ${label}\n  requires: ${requires}`);
           }
         }
@@ -2714,8 +3130,8 @@ const commands = {
           }
         }
 
-        if (options.json) {
-          console.log(JSON.stringify({ instances: results }, null, 2));
+        if (isJsonMode(options)) {
+          printJson({ instances: results });
           return;
         }
 
@@ -2754,10 +3170,26 @@ const commands = {
           }
         }
 
-        if (options.json) {
-          console.log(JSON.stringify({ instances: results }, null, 2));
+        if (isJsonMode(options)) {
+          printJson({ instances: results });
           return;
         }
+
+        if (isQuietMode(options)) {
+          for (const result of results) {
+            if (result.error) {
+              process.stderr.write(`port ${result.port} failed: ${result.error}\n`);
+              continue;
+            }
+            const active = Boolean(result.status?.active);
+            const provider = result.status?.provider || 'unknown';
+            const mode = result.status?.mode || 'unknown';
+            const url = result.status?.url || 'n/a';
+            process.stdout.write(`port ${result.port} ${active ? 'active' : 'inactive'} ${provider}/${mode} ${url}\n`);
+          }
+          return;
+        }
+
         clackIntro('Tunnel Status');
         for (const result of results) {
           if (result.error) {
@@ -2771,8 +3203,7 @@ const commands = {
         return;
       }
       case 'doctor': {
-        const useDoctorSpinner = !options.json && !options.quiet && clackIsTTY;
-        const doctorSpin = useDoctorSpinner ? clackSpinner() : null;
+        const doctorSpin = createSpinner(options);
         doctorSpin?.start('Running tunnel diagnostics...');
 
         // Phase 1: Port discovery
@@ -2871,17 +3302,17 @@ const commands = {
           }
         }
 
-        doctorSpin?.stop();
+        doctorSpin?.clear();
 
         // JSON output
-        if (options.json) {
+        if (isJsonMode(options)) {
           const cliPorts = portStatuses
             .filter((s) => s.available)
             .map((s) => ({ port: s.port, type: 'cli', available: true }));
           const desktopPorts = portStatuses
             .filter((s) => !s.available)
             .map((s) => ({ port: s.port, type: 'desktop', available: false }));
-          console.log(JSON.stringify({
+          printJson({
             ports: [...cliPorts, ...desktopPorts],
             provider: doctorResult ? {
               id: doctorResult.provider,
@@ -2889,7 +3320,7 @@ const commands = {
             } : null,
             modes: doctorResult?.modes || [],
             error: doctorError || undefined,
-          }, null, 2));
+          });
           return;
         }
 
@@ -2980,6 +3411,7 @@ const commands = {
 
         clackIntro(boldText('Modes'));
         let totalBlockers = 0;
+        const troubleshootingHints = [];
         for (const modeEntry of modes) {
           const isReady = modeEntry.ready === true || modeEntry.summary?.ready === true;
           if (isReady) {
@@ -3002,9 +3434,66 @@ const commands = {
             for (const blocker of blockers) {
               clackLog.message(`  ${blocker}`);
             }
+
+            const normalizedBlockers = blockers.map((blocker) => String(blocker).toLowerCase());
+            const isManagedRemote = modeEntry.mode === 'managed-remote';
+            const hasTokenIssue = normalizedBlockers.some((line) => line.includes('token')
+              || line.includes('unauthorized')
+              || line.includes('forbidden')
+              || line.includes('authentication')
+              || line.includes('auth'));
+            const hasPortOrOriginIssue = normalizedBlockers.some((line) => line.includes('port')
+              || line.includes('localhost')
+              || line.includes('127.0.0.1')
+              || line.includes('connection refused')
+              || line.includes('dial tcp'));
+
+            if (isManagedRemote && (hasPortOrOriginIssue || hasTokenIssue)) {
+              troubleshootingHints.push({
+                key: 'managed-remote-port',
+                code: '[PORT_MISMATCH]',
+                lines: [
+                  'Cloudflare target must match the active OpenChamber CLI port.',
+                  'Example: `http://127.0.0.1:<port>`',
+                  'If CLI picked a different port, update Cloudflare or run `openchamber serve --port <port>`.',
+                ],
+              });
+            }
+
+            if (isManagedRemote && hasTokenIssue) {
+              troubleshootingHints.push({
+                key: 'managed-remote-token',
+                code: '[QR_PREFETCH_TOKEN]',
+                lines: [
+                  'Some QR readers pre-fetch scanned URLs.',
+                  'Pre-fetch can consume one-time bootstrap tokens.',
+                  'If validation fails, generate a fresh token/QR and use it immediately in one browser/device.',
+                ],
+              });
+            }
           }
         }
         clackOutro(totalBlockers > 0 ? `Done (${totalBlockers} ${totalBlockers === 1 ? 'issue' : 'issues'})` : 'All modes ready');
+
+        const dedupedHints = [];
+        const seenHintKeys = new Set();
+        for (const hint of troubleshootingHints) {
+          if (!seenHintKeys.has(hint.key)) {
+            seenHintKeys.add(hint.key);
+            dedupedHints.push(hint);
+          }
+        }
+
+        if (dedupedHints.length > 0) {
+          console.log('');
+          clackIntro(boldText('Troubleshooting'));
+          for (const hint of dedupedHints) {
+            const lines = Array.isArray(hint.lines) ? hint.lines : [];
+            const detail = lines.length > 0 ? lines.map((line) => `  ${line}`).join('\n') : undefined;
+            logStatus('warning', hint.code || '[WARNING]', detail);
+          }
+          clackOutro(`${dedupedHints.length} ${dedupedHints.length === 1 ? 'suggestion' : 'suggestions'}`);
+        }
         return;
       }
       case 'start': {
@@ -3037,7 +3526,7 @@ const commands = {
         }
 
         // Interactive profile selection when no profile/mode specified in TTY
-        if (!selectedProfile && !mode && !options.json && !options.quiet && clackIsTTY) {
+        if (!selectedProfile && !mode && canPrompt(options)) {
           const store = ensureTunnelProfilesMigrated();
           if (store.profiles.length > 0) {
             const profileChoice = await clackSelect({
@@ -3070,7 +3559,7 @@ const commands = {
         provider = provider || 'cloudflare';
 
         // Interactive mode selection when mode not yet resolved in TTY
-        if (!mode && !options.json && !options.quiet && clackIsTTY) {
+        if (!mode && canPrompt(options)) {
           const providerCaps = DEFAULT_TUNNEL_PROVIDER_CAPABILITIES.find(
             (cap) => cap.provider === provider
           );
@@ -3081,7 +3570,7 @@ const commands = {
               options: modes.map((m) => ({
                 value: m.key,
                 label: `${m.key} — ${m.label}`,
-                hint: m.requires?.length ? `requires: ${m.requires.join(', ')}` : undefined,
+                hint: formatModeRequirements(m) !== 'none' ? `requires: ${formatModeRequirements(m)}` : undefined,
               })),
             });
             if (clackIsCancel(modeChoice)) {
@@ -3094,8 +3583,36 @@ const commands = {
 
         mode = mode || 'quick';
         if (mode === 'managed-remote') {
+          if (!(typeof hostname === 'string' && hostname.trim().length > 0)) {
+            if (canPrompt(options)) {
+              const profilesStore = ensureTunnelProfilesMigrated();
+              const lastManagedRemoteProfile = [...profilesStore.profiles]
+                .filter((entry) => entry.provider === provider && entry.mode === 'managed-remote')
+                .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
+              const suggestedHostname = normalizeProfileHostname(lastManagedRemoteProfile?.hostname) || 'app.example.com';
+              const enteredHostname = await clackText({
+                message: 'Enter managed-remote tunnel hostname',
+                placeholder: suggestedHostname,
+                initialValue: suggestedHostname,
+                validate(value) {
+                  if (typeof value !== 'string' || value.trim().length === 0) {
+                    return 'Hostname is required.';
+                  }
+                  return undefined;
+                },
+              });
+              if (clackIsCancel(enteredHostname)) {
+                clackCancel('Tunnel start cancelled.');
+                return;
+              }
+              hostname = enteredHostname.trim();
+            } else {
+              throw new Error('Managed-remote mode requires --hostname <hostname>.');
+            }
+          }
+
           if (!(typeof token === 'string' && token.trim().length > 0)) {
-            if (!options.json && !options.quiet && clackIsTTY) {
+            if (canPrompt(options)) {
               const entered = await clackPassword({
                 message: 'Enter managed-remote tunnel token',
               });
@@ -3108,11 +3625,87 @@ const commands = {
               throw new Error('Managed-remote mode requires a token (--token, --token-file, or --token-stdin).');
             }
           }
-          if (!(typeof hostname === 'string' && hostname.trim().length > 0)) {
-            throw new Error('Managed-remote mode requires --hostname <hostname>.');
+
+          if (!selectedProfile && canPrompt(options)) {
+            const runChoice = await clackSelect({
+              message: 'Run once, or save profile and run?',
+              options: [
+                { value: 'run', label: 'Run once', hint: 'Do not save profile' },
+                { value: 'save-run', label: 'Save profile and run', hint: 'Reuse with --profile later' },
+              ],
+            });
+            if (clackIsCancel(runChoice)) {
+              clackCancel('Tunnel start cancelled.');
+              return;
+            }
+
+            if (runChoice === 'save-run') {
+              const suggestedName = suggestProfileNameFromHostname(hostname);
+              const enteredProfileName = await clackText({
+                message: 'Profile name',
+                placeholder: suggestedName,
+                initialValue: suggestedName,
+                validate(value) {
+                  return normalizeProfileName(value).length > 0 ? undefined : 'Profile name is required.';
+                },
+              });
+              if (clackIsCancel(enteredProfileName)) {
+                clackCancel('Tunnel start cancelled.');
+                return;
+              }
+
+              const desiredName = normalizeProfileName(enteredProfileName);
+              const store = ensureTunnelProfilesMigrated();
+              const existingIndex = store.profiles.findIndex(
+                (entry) => entry.provider === provider && entry.name.toLowerCase() === desiredName.toLowerCase()
+              );
+
+              if (existingIndex >= 0) {
+                const shouldOverwrite = await clackConfirm({
+                  message: `Profile '${desiredName}' already exists. Overwrite and run?`,
+                  initialValue: true,
+                });
+                if (clackIsCancel(shouldOverwrite) || !shouldOverwrite) {
+                  clackCancel('Tunnel start cancelled.');
+                  return;
+                }
+              }
+
+              const now = Date.now();
+              const nextProfiles = [...store.profiles];
+              if (existingIndex >= 0) {
+                const current = nextProfiles[existingIndex];
+                nextProfiles[existingIndex] = {
+                  ...current,
+                  mode: 'managed-remote',
+                  hostname,
+                  token,
+                  updatedAt: now,
+                };
+              } else {
+                nextProfiles.push({
+                  id: crypto.randomUUID(),
+                  name: desiredName,
+                  provider,
+                  mode: 'managed-remote',
+                  hostname,
+                  token,
+                  createdAt: now,
+                  updatedAt: now,
+                });
+              }
+
+              const persisted = { version: TUNNEL_PROFILES_VERSION, profiles: nextProfiles };
+              writeTunnelProfilesToDisk(persisted);
+              writeManagedRemotePairsToDiskFromProfiles(persisted);
+
+              selectedProfile = persisted.profiles.find(
+                (entry) => entry.provider === provider && entry.name.toLowerCase() === desiredName.toLowerCase()
+              ) || null;
+            }
           }
 
-          if (typeof options.token === 'string' && !options.tokenFile && !options.tokenStdin && !options.json && !options.quiet && clackIsTTY) {
+          if (typeof options.token === 'string' && !options.tokenFile && !options.tokenStdin && canPrompt(options)) {
             clackBox(
               'Token passed via --token is visible in your shell history and process list.\n' +
               'Consider using --token-file or --token-stdin for better security.',
@@ -3123,18 +3716,22 @@ const commands = {
 
         if (mode === 'managed-local') {
           const hasConfigPath = typeof options.configPath === 'string' && options.configPath.trim().length > 0;
-          if (!hasConfigPath && !options.json && !options.quiet && clackIsTTY) {
+          if (!hasConfigPath && canPrompt(options)) {
+            const lastConfigPath = readLastManagedLocalConfigPath();
             const defaultConfigPath = getDefaultCloudflaredConfigPath();
+            const suggestedConfigPath = lastConfigPath || defaultConfigPath;
+            const suggestedConfigFound = isReadableRegularFile(suggestedConfigPath);
             const defaultConfigFound = isReadableRegularFile(defaultConfigPath);
 
-            if (defaultConfigFound) {
+            if (suggestedConfigFound || defaultConfigFound) {
+              const foundPath = suggestedConfigFound ? suggestedConfigPath : defaultConfigPath;
               const configChoice = await clackSelect({
                 message: 'Managed-local config',
                 options: [
                   {
                     value: 'default',
                     label: 'Use found config',
-                    hint: defaultConfigPath,
+                    hint: foundPath,
                   },
                   {
                     value: 'custom',
@@ -3147,14 +3744,15 @@ const commands = {
                 return;
               }
               if (configChoice === 'default') {
-                options.configPath = defaultConfigPath;
+                options.configPath = foundPath;
               }
             }
 
             if (!(typeof options.configPath === 'string' && options.configPath.trim().length > 0)) {
               const enteredPath = await clackText({
                 message: 'Enter managed-local config path',
-                placeholder: defaultConfigPath,
+                placeholder: suggestedConfigPath,
+                initialValue: suggestedConfigPath,
                 validate(value) {
                   if (typeof value !== 'string' || value.trim().length === 0) {
                     return 'Config path is required.';
@@ -3167,6 +3765,10 @@ const commands = {
                 return;
               }
               options.configPath = enteredPath.trim();
+            }
+
+            if (typeof options.configPath === 'string' && options.configPath.trim().length > 0) {
+              writeLastManagedLocalConfigPath(options.configPath);
             }
           }
         }
@@ -3190,9 +3792,9 @@ const commands = {
             connectTtlMs: connectTtlMs ?? null,
             sessionTtlMs: sessionTtlMs ?? null,
           };
-          if (options.json) {
-            console.log(JSON.stringify(dryRunResult, null, 2));
-          } else if (!options.quiet) {
+          if (isJsonMode(options)) {
+            printJson(dryRunResult);
+          } else if (!isQuietMode(options)) {
             clackIntro('Tunnel Start (dry-run)');
             logStatus('info', `Would start ${clackFormatProviderWithIcon(provider)}/${mode}`, hostname || '(ephemeral URL)');
             clackOutro('dry-run complete (no changes applied)');
@@ -3200,7 +3802,7 @@ const commands = {
           return;
         }
 
-        if (!options.explicitPort && !options.json && !options.quiet && clackIsTTY) {
+        if (!options.explicitPort && canPrompt(options)) {
           const runningInstances = await discoverRunningInstances();
           if (runningInstances.length > 1) {
             const safeInstances = runningInstances.filter((entry) => !isUnsafeBrowserPort(entry.port));
@@ -3245,7 +3847,7 @@ const commands = {
         }
 
         const instance = await resolveTargetInstance({ options, allowAutoStart: true, rejectDesktopRuntime: true });
-        if (instance?.autoStarted && !options.json && !options.quiet) {
+        if (instance?.autoStarted && shouldRenderHumanOutput(options)) {
           logStatus(
             'info',
             `Using auto-started instance on port ${instance.port}`,
@@ -3263,8 +3865,7 @@ const commands = {
         }
 
         if (instance?.autoStarted) {
-          const useHealthProgress = !options.json && !options.quiet && clackIsTTY;
-          const healthProgress = useHealthProgress ? await clackProgress({ max: 60 }) : null;
+          const healthProgress = await createProgress(options, { max: 60 });
           healthProgress?.start(`Waiting for OpenChamber on port ${instance.port} to become healthy (up to 60s)...`);
           let progressedSeconds = 0;
           const healthy = await waitForServerHealth(instance.port, {
@@ -3331,8 +3932,7 @@ const commands = {
           } : {}),
         };
 
-        const useSpinner = !options.json && !options.quiet && clackIsTTY;
-        const spin = useSpinner ? clackSpinner() : null;
+        const spin = createSpinner(options);
         spin?.start(`Starting ${clackFormatProviderWithIcon(provider)}/${mode} tunnel...`);
 
         let response;
@@ -3385,15 +3985,16 @@ const commands = {
           tokenFileProvided: typeof options.tokenFile === 'string' && options.tokenFile.trim().length > 0,
         });
 
-        if (options.json) {
-          console.log(JSON.stringify({ port: instance.port, replayCommand, ...body }, null, 2));
+        if (isJsonMode(options)) {
+          printJson({ port: instance.port, replayCommand, ...body });
+        } else if (isQuietMode(options)) {
+          const quietUrl = body.connectUrl || body.url || 'n/a';
+          process.stdout.write(`port ${instance.port} ${quietUrl}\n`);
         } else {
-          clackIntro('Tunnel Started');
+          console.log('');
+          clackIntro(boldText('Tunnel Started'));
           logStatus('success', `port ${instance.port} ${clackFormatProviderWithIcon(body.provider)}/${body.mode}`);
-          logStatus('success', body.url || 'n/a');
-          if (body.connectUrl) {
-            logStatus('success', body.connectUrl);
-          }
+          logStatus('success', body.connectUrl || body.url || 'n/a');
           if (body.replacedTunnel) {
             const revokedBootstrapCount = Number.isFinite(body.revokedBootstrapCount) ? body.revokedBootstrapCount : 0;
             const invalidatedSessionCount = Number.isFinite(body.invalidatedSessionCount) ? body.invalidatedSessionCount : 0;
@@ -3404,9 +4005,26 @@ const commands = {
               `revoked ${revokedBootstrapCount}, invalidated ${invalidatedSessionCount}`,
             );
           }
-          logStatus('info', `save: ${replayCommand}`);
-          logStatus('info', 'status: openchamber tunnel status | stop: openchamber tunnel stop');
-          clackOutro('tunnel ready');
+          clackOutro('');
+
+          const optionalTips = [
+            { line: 'Check status', detail: 'openchamber tunnel status' },
+            { line: 'Stop tunnel', detail: 'openchamber tunnel stop' },
+            { line: 'If needed, repeat with same settings', detail: replayCommand },
+          ];
+
+          if (!selectedProfile && mode === 'managed-remote' && typeof hostname === 'string' && hostname.trim().length > 0) {
+            const profileSaveCommand = buildTunnelProfileAddCommand({ provider, hostname });
+            optionalTips.push({ line: 'Optional: save reusable profile (stores hostname + token locally)', detail: profileSaveCommand });
+            optionalTips.push({ line: 'Start from saved profile', detail: 'openchamber tunnel start --profile <name>' });
+          }
+
+          console.log('');
+          clackIntro('Optional Tips');
+          for (const tip of optionalTips) {
+            logStatus('info', tip.line, tip.detail);
+          }
+          clackOutro('');
         }
 
         setCancelCleanup(null);
@@ -3423,7 +4041,7 @@ const commands = {
         let entries;
         if (options.all) {
           entries = await resolveTargetInstance({ options, allowAutoStart: false, requireAll: true });
-          if (entries.length > 1 && !options.force && !options.json && !options.quiet && clackIsTTY) {
+          if (entries.length > 1 && !options.force && canPrompt(options)) {
             const shouldStop = await clackConfirm({
               message: `Stop tunnels on all ${entries.length} instances?`,
             });
@@ -3452,10 +4070,22 @@ const commands = {
           }
         }
 
-        if (options.json) {
-          console.log(JSON.stringify({ instances: results }, null, 2));
+        if (isJsonMode(options)) {
+          printJson({ instances: results });
           return;
         }
+
+        if (isQuietMode(options)) {
+          for (const result of results) {
+            if (result.error) {
+              process.stderr.write(`port ${result.port} failed: ${result.error}\n`);
+              continue;
+            }
+            process.stdout.write(`port ${result.port} stopped\n`);
+          }
+          return;
+        }
+
         clackIntro('Tunnel Stop');
         for (const result of results) {
           if (result.error) {
@@ -3492,6 +4122,8 @@ const commands = {
   },
 
   async logs(options) {
+    const showFrames = shouldRenderHumanOutput(options);
+    const shouldPrefixLines = options.all || !showFrames;
     let targets = [];
     const running = await discoverRunningInstances();
 
@@ -3512,21 +4144,40 @@ const commands = {
         throw new Error('No running OpenChamber instance found.');
       }
       targets = [latest];
+      if (shouldRenderHumanOutput(options)) {
+        logStatus('info', `no port specified; using latest started instance on port ${latest.port}`);
+      }
     }
 
-    printSectionStart('OpenChamber Logs');
+    if (isJsonMode(options)) {
+      if (options.follow) {
+        throw new Error('`openchamber logs --json` requires `--no-follow` for deterministic JSON output.');
+      }
+      const entries = targets.map((target) => {
+        const logPath = getLogFilePath(target.port);
+        return {
+          port: target.port,
+          logPath,
+          lines: readTailLines(logPath, options.lines),
+        };
+      });
+      printJson({ entries });
+      return;
+    }
+
+    if (showFrames) {
+      clackIntro('OpenChamber Logs');
+    }
 
     for (const target of targets) {
       const logPath = getLogFilePath(target.port);
       const lines = readTailLines(logPath, options.lines);
-      printListItem({
-        status: 'info',
-        line: `port ${target.port}`,
-        detail: logPath,
-      });
+      if (showFrames) {
+        logStatus('info', `port ${target.port}`, logPath);
+      }
 
       for (const line of lines) {
-        if (options.all) {
+        if (shouldPrefixLines) {
           console.log(`[${target.port}] ${line}`);
         } else {
           console.log(line);
@@ -3534,7 +4185,9 @@ const commands = {
       }
     }
 
-    printSectionEnd(options.follow ? 'following (Ctrl+C to stop)' : 'tail complete');
+    if (showFrames) {
+      clackOutro(options.follow ? 'following (Ctrl+C to stop)' : 'tail complete');
+    }
 
     if (!options.follow) {
       return;
@@ -3543,7 +4196,7 @@ const commands = {
     const unsubs = targets.map((target) => {
       const logPath = getLogFilePath(target.port);
       return followFile(logPath, (line) => {
-        if (options.all) {
+        if (shouldPrefixLines) {
           console.log(`[${target.port}] ${line}`);
         } else {
           console.log(line);
@@ -3565,7 +4218,10 @@ const commands = {
     });
   },
 
-  async update() {
+  async update(options = {}) {
+    const showOutput = shouldRenderHumanOutput(options);
+    const updateSpin = createSpinner(options);
+
     const packageManagerPath = path.join(__dirname, '..', 'server', 'lib', 'package-manager.js');
     const {
       checkForUpdates,
@@ -3575,20 +4231,52 @@ const commands = {
     } = await importFromFilePath(packageManagerPath);
 
     const runningInstances = await discoverRunningInstances();
+    const currentVersion = getCurrentVersion();
 
-    console.log('Checking for updates...');
-    console.log(`Current version: ${getCurrentVersion()}`);
+    if (showOutput) {
+      clackIntro('OpenChamber Update');
+    }
+
+    if (showOutput && !updateSpin) {
+      logStatus('info', `current version: ${currentVersion}`);
+    }
+
+    updateSpin?.start('Checking for updates...');
 
     const updateInfo = await checkForUpdates();
     if (updateInfo.error) {
+      updateSpin?.error('Update check failed');
+      if (showOutput) {
+        clackOutro('update failed');
+      }
       throw new Error(updateInfo.error);
     }
     if (!updateInfo.available) {
-      console.log('You are running the latest version.');
+      if (isJsonMode(options)) {
+        printJson({
+          currentVersion,
+          latestVersion: updateInfo.version || currentVersion,
+          updated: false,
+        });
+        return;
+      }
+      if (showOutput && !updateSpin) {
+        logStatus('success', 'you are running the latest version');
+      }
+      updateSpin?.stop('Already up to date');
+      if (showOutput) {
+        clackOutro('no update needed');
+      }
       return;
     }
 
+    if (showOutput && !updateSpin) {
+      logStatus('info', `updating ${updateInfo.currentVersion || currentVersion} -> ${updateInfo.version || 'latest'}`);
+    }
+    updateSpin?.message(`Updating to ${updateInfo.version || 'latest'}...`);
+
     if (runningInstances.length > 0) {
+      updateSpin?.message(`Stopping ${runningInstances.length} running instance(s)...`);
       for (const instance of runningInstances) {
         try {
           await requestServerShutdown(instance.port);
@@ -3608,20 +4296,45 @@ const commands = {
     }
 
     const pm = detectPackageManager();
-    const result = executeUpdate(pm);
+    const result = executeUpdate(pm, { silent: isJsonMode(options) || isQuietMode(options) });
     if (!result.success) {
+      updateSpin?.error('Update failed');
+      if (showOutput) {
+        clackOutro('update failed');
+      }
       throw new Error(`Update failed with exit code ${result.exitCode}`);
     }
 
     if (runningInstances.length > 0) {
+      updateSpin?.message(`Restarting ${runningInstances.length} instance(s)...`);
       for (const instance of runningInstances) {
         const storedOptions = readInstanceOptions(instance.instanceFilePath) || { port: instance.port };
         await this.serve({
           port: storedOptions.port || instance.port,
           explicitPort: true,
           uiPassword: storedOptions.uiPassword,
+          suppressStartupSummary: true,
+          suppressUiPasswordWarning: true,
+          quiet: true,
         });
       }
+    }
+
+    if (showOutput && !updateSpin) {
+      logStatus('success', `updated to ${updateInfo.version || 'latest'}`);
+    }
+    updateSpin?.stop(`Updated to ${updateInfo.version || 'latest'}`);
+    if (isJsonMode(options)) {
+      printJson({
+        currentVersion,
+        latestVersion: updateInfo.version || 'latest',
+        updated: true,
+        restartedCount: runningInstances.length,
+      });
+      return;
+    }
+    if (showOutput) {
+      clackOutro('update complete');
     }
   },
 };
@@ -3629,15 +4342,30 @@ const commands = {
 async function main() {
   const parsed = parseArgs();
   const { command, subcommand, tunnelAction, options, removedFlagErrors, helpRequested, versionRequested } = parsed;
+  activeCommandOptions = options;
 
   if (versionRequested) {
-    console.log(PACKAGE_JSON.version);
+    if (isJsonMode(options)) {
+      printJson({ version: PACKAGE_JSON.version });
+    } else {
+      console.log(PACKAGE_JSON.version);
+    }
     return;
   }
 
   if (removedFlagErrors.length > 0) {
-    for (const error of removedFlagErrors) {
-      console.error(`Error: ${error}`);
+    if (isJsonMode(options)) {
+      printJson({
+        status: 'error',
+        error: {
+          message: removedFlagErrors[0],
+          details: removedFlagErrors,
+        },
+      });
+    } else {
+      for (const error of removedFlagErrors) {
+        console.error(`Error: ${error}`);
+      }
     }
     process.exit(1);
   }
@@ -3660,8 +4388,18 @@ async function main() {
     const knownCommands = ['serve', 'stop', 'restart', 'status', 'tunnel', 'logs', 'update'];
     const suggestion = findClosestMatch(command, knownCommands);
     const hint = suggestion ? ` Did you mean '${suggestion}'?` : '';
-    console.error(`Error: Unknown command '${command}'.${hint}`);
-    console.error('Use --help to see available commands');
+    if (isJsonMode(options)) {
+      printJson({
+        status: 'error',
+        error: {
+          message: `Unknown command '${command}'.${hint}`,
+        },
+        messages: [{ level: 'info', code: 'USAGE_HELP', message: 'Use --help to see available commands' }],
+      });
+    } else {
+      console.error(`Error: Unknown command '${command}'.${hint}`);
+      console.error('Use --help to see available commands');
+    }
     process.exit(EXIT_CODE.USAGE_ERROR);
   }
 
@@ -3713,8 +4451,17 @@ if (isCliExecution) {
 
   main().catch((error) => {
     const message = error instanceof Error ? error.message : String(error);
-    if (process.stdout?.isTTY && !HAS_PLAIN_FLAG) {
+    if (isJsonMode(activeCommandOptions)) {
+      printJson({
+        status: 'error',
+        error: {
+          message,
+        },
+      });
+    } else if (process.stdout?.isTTY && !HAS_PLAIN_FLAG) {
+      clackIntro(boldText('Error'));
       logStatus('error', message);
+      clackOutro('failed');
     } else {
       console.error(`Error: ${message}`);
     }

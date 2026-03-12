@@ -65,13 +65,78 @@ Do not use this skill for web UI or VS Code webview styling work.
 
 Centralize Clack imports and formatting helpers in one adapter module (for example `cli-output.js`) so command logic stays focused on behavior and policy.
 
+### Thin framework (recommended)
+
+Use a small shared helper surface rather than command-specific formatting logic.
+
+- `isJsonMode(options)`
+- `isQuietMode(options)`
+- `shouldRenderHumanOutput(options)`
+- `canPrompt(options)`
+- `createSpinner(options)`
+- `createProgress(options, config)`
+- `printJson(payload)`
+
+Keep this layer minimal. Do not hide core validation or command semantics inside output helpers.
+
+## Output Contracts by Mode
+
+### `--quiet` contract
+
+`--quiet` should still return essential result data.
+
+- Read/list commands: emit concise machine-friendly lines (not framed Clack blocks).
+- Action commands: emit one minimal success line and concise errors.
+- Do not suppress required outcomes entirely.
+
+### `--json` contract (strict)
+
+- Output must be JSON only (no extra text before/after payload).
+- Warnings/info should be represented in JSON fields (for example `status`, `messages`).
+- Preserve non-zero exit codes for failures.
+
+## Human UX Consistency
+
+### Framing completeness
+
+- If human flow uses `intro`, close with `outro` (or `outro('')` when you want structure without text).
+- Avoid orphan frame/spinner artifacts (prefer `spinner.clear()` when a trailing spinner line is not wanted).
+
+### Readability on narrow terminals
+
+- Prefer short lines.
+- Split long guidance into multiple detail lines.
+- Use warning/info codes (`[CODE]`) when the message has follow-up docs or repeat use.
+
+### Guidance tone
+
+- Use `Optional Tips` for non-required next actions.
+- Avoid wording that implies mandatory follow-up unless it is truly required.
+
+### Guidance rendering style (preferred)
+
+- Prefer structured status lines for reusable hints:
+  - `logStatus('info', '[CODE]', '<actionable command or short guidance>')`
+- Use short, stable codes (for example `[START_PROFILE]`, `[PORT_MISMATCH]`) so users can quickly scan and recognize repeated guidance.
+- Prefer this style over boxed notes for routine follow-up actions.
+- Reserve `note`/boxed callouts for rare, high-context guidance where a long paragraph is truly necessary.
+
+## Parity Verification Matrix
+
+For each command/subcommand, manually verify:
+
+1. default interactive TTY output
+2. `--quiet` output (minimal but informative)
+3. `--json` output (JSON-only)
+4. non-TTY behavior (e.g. piped)
+5. error path in both human and json modes
+
 ## Copy/Paste Snippets
 
 ### Prompt Guard
 
 ```js
-const shouldPrompt = !options.json && !options.quiet && isTTY;
-if (shouldPrompt) {
+if (canPrompt(options)) {
   const value = await select({
     message: 'Choose an option',
     options: [{ value: 'a', label: 'Option A' }],
@@ -87,7 +152,7 @@ if (shouldPrompt) {
 
 ```js
 if (!resolvedValue) {
-  if (!options.json && !options.quiet && isTTY) {
+  if (canPrompt(options)) {
     // prompt path
   } else {
     throw new Error('Missing required value. Provide --flag <value>.');
@@ -98,8 +163,7 @@ if (!resolvedValue) {
 ### Spinner Guard
 
 ```js
-const useSpinner = !options.json && !options.quiet && isTTY;
-const spin = useSpinner ? spinner() : null;
+const spin = createSpinner(options);
 spin?.start('Running operation...');
 // ...work...
 spin?.stop('Done');
@@ -109,7 +173,7 @@ spin?.stop('Done');
 
 ```js
 if (options.json) {
-  console.log(JSON.stringify({ ok: true, data }, null, 2));
+  printJson({ ok: true, data });
   return;
 }
 
