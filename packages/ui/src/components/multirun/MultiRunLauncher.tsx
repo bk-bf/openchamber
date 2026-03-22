@@ -6,7 +6,8 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
-import { cn } from '@/lib/utils';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { cn, formatDirectoryName } from '@/lib/utils';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
 import { useMultiRunStore } from '@/stores/useMultiRunStore';
 import { useSessionStore } from '@/stores/useSessionStore';
@@ -41,6 +42,8 @@ interface MultiRunLauncherProps {
   onCreated?: () => void;
   /** Called when user cancels */
   onCancel?: () => void;
+  /** Rendered inside dialog window with no local header */
+  isWindowed?: boolean;
 }
 
 /**
@@ -51,6 +54,7 @@ export const MultiRunLauncher: React.FC<MultiRunLauncherProps> = ({
   initialPrompt,
   onCreated,
   onCancel,
+  isWindowed = false,
 }) => {
   const [name, setName] = React.useState('');
   const [prompt, setPrompt] = React.useState(() => initialPrompt ?? '');
@@ -64,6 +68,7 @@ export const MultiRunLauncher: React.FC<MultiRunLauncherProps> = ({
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
   const currentDirectory = useDirectoryStore((state) => state.currentDirectory ?? null);
+  const homeDirectory = useDirectoryStore((state) => state.homeDirectory ?? null);
   
   const vscodeWorkspaceFolder = React.useMemo(() => {
     if (typeof window === 'undefined') {
@@ -75,13 +80,47 @@ export const MultiRunLauncher: React.FC<MultiRunLauncherProps> = ({
 
   // Get project directory for setup commands
   const activeProjectId = useProjectsStore((state) => state.activeProjectId);
+  const setActiveProjectIdOnly = useProjectsStore((state) => state.setActiveProjectIdOnly);
   const projects = useProjectsStore((state) => state.projects);
-  const projectRef = React.useMemo<ProjectRef | null>(() => {
+  const [selectedProjectId, setSelectedProjectId] = React.useState<string | null>(() => activeProjectId ?? null);
+
+  React.useEffect(() => {
     if (activeProjectId) {
-      const project = projects.find((p) => p.id === activeProjectId);
-      if (project?.path) {
-        return { id: project.id, path: project.path };
-      }
+      setSelectedProjectId(activeProjectId);
+      return;
+    }
+    if (!selectedProjectId && projects.length > 0) {
+      setSelectedProjectId(projects[0].id);
+    }
+  }, [activeProjectId, projects, selectedProjectId]);
+
+  const selectedProject = React.useMemo(() => {
+    if (!selectedProjectId) {
+      return null;
+    }
+    return projects.find((project) => project.id === selectedProjectId) ?? null;
+  }, [projects, selectedProjectId]);
+
+  const selectedProjectDirectory = selectedProject?.path ?? currentDirectory;
+
+  const handleProjectChange = React.useCallback((projectId: string) => {
+    setSelectedProjectId(projectId);
+    if (projectId !== activeProjectId) {
+      setActiveProjectIdOnly(projectId);
+    }
+  }, [activeProjectId, setActiveProjectIdOnly]);
+
+  const projectSelectLabel = React.useCallback((project: { label?: string; path: string }) => {
+    const label = project.label?.trim();
+    if (label) {
+      return label;
+    }
+    return formatDirectoryName(project.path, homeDirectory);
+  }, [homeDirectory]);
+
+  const projectRef = React.useMemo<ProjectRef | null>(() => {
+    if (selectedProject?.path) {
+      return { id: selectedProject.id, path: selectedProject.path };
     }
 
     const base = currentDirectory ?? vscodeWorkspaceFolder;
@@ -90,7 +129,7 @@ export const MultiRunLauncher: React.FC<MultiRunLauncherProps> = ({
     }
 
     return { id: `path:${base}`, path: base };
-  }, [activeProjectId, projects, currentDirectory, vscodeWorkspaceFolder]);
+  }, [selectedProject, currentDirectory, vscodeWorkspaceFolder]);
 
   const [isDesktopApp, setIsDesktopApp] = React.useState<boolean>(() => {
     if (typeof window === 'undefined') {
@@ -194,7 +233,7 @@ export const MultiRunLauncher: React.FC<MultiRunLauncherProps> = ({
 
   // Use the BranchSelector hook for branch state management
   const [worktreeBaseBranch, setWorktreeBaseBranch] = React.useState<string>('HEAD');
-  const { isLoading: isLoadingWorktreeBaseBranches, isGitRepository } = useBranchOptions(currentDirectory);
+  const { isLoading: isLoadingWorktreeBaseBranches, isGitRepository } = useBranchOptions(selectedProjectDirectory);
 
   const createMultiRun = useMultiRunStore((state) => state.createMultiRun);
   const error = useMultiRunStore((state) => state.error);
@@ -311,6 +350,10 @@ export const MultiRunLauncher: React.FC<MultiRunLauncherProps> = ({
     clearError();
 
     try {
+      if (selectedProjectId && selectedProjectId !== activeProjectId) {
+        setActiveProjectIdOnly(selectedProjectId);
+      }
+
       // Strip instanceId before passing to store (UI-only field)
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const modelsForStore: MultiRunModelSelection[] = selectedModels.map(({ instanceId: _instanceId, ...rest }) => rest);
@@ -355,43 +398,70 @@ export const MultiRunLauncher: React.FC<MultiRunLauncherProps> = ({
 
   return (
     <div className="flex flex-col h-full bg-background">
-      {/* Header - same height as app header (h-12 = 48px) */}
-      <header
-        onMouseDown={handleDragStart}
-        className={cn(
-          'relative flex h-12 items-center justify-center border-b app-region-drag select-none',
-          desktopHeaderPaddingClass,
-          macosHeaderSizeClass,
-        )}
-        style={{ borderColor: 'var(--interactive-border)' }}
-      >
-        <h1 className="typography-ui-label font-medium">New Multi-Run</h1>
-        {onCancel && (
-          <div className="absolute right-0 flex items-center pr-3">
-            <Tooltip delayDuration={500}>
-              <TooltipTrigger asChild>
-                <button
-                  type="button"
-                  onClick={onCancel}
-                  aria-label="Close (Esc)"
-                  className="inline-flex h-9 w-9 items-center justify-center p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-interactive-hover/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary app-region-no-drag"
-                >
-                  <RiCloseLine className="h-5 w-5" />
-                </button>
-              </TooltipTrigger>
-              <TooltipContent>
-                <p>Close (Esc)</p>
-              </TooltipContent>
-            </Tooltip>
-          </div>
-        )}
-      </header>
+      {!isWindowed ? (
+        <header
+          onMouseDown={handleDragStart}
+          className={cn(
+            'relative flex h-12 items-center justify-center border-b app-region-drag select-none',
+            desktopHeaderPaddingClass,
+            macosHeaderSizeClass,
+          )}
+          style={{ borderColor: 'var(--interactive-border)' }}
+        >
+          <h1 className="typography-ui-label font-medium">New Multi-Run</h1>
+          {onCancel && (
+            <div className="absolute right-0 flex items-center pr-3">
+              <Tooltip delayDuration={500}>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    onClick={onCancel}
+                    aria-label="Close (Esc)"
+                    className="inline-flex h-9 w-9 items-center justify-center p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-interactive-hover/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary app-region-no-drag"
+                  >
+                    <RiCloseLine className="h-5 w-5" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p>Close (Esc)</p>
+                </TooltipContent>
+              </Tooltip>
+            </div>
+          )}
+        </header>
+      ) : null}
 
       {/* Content with chat-column max-width */}
       <div className="flex-1 overflow-auto">
         <div className="chat-column py-6">
           <form onSubmit={handleSubmit} className="space-y-6" data-keyboard-avoid="true">
-            {/* Group name (required) */}
+            {/* Project selection */}
+            <div className="space-y-2">
+              <label htmlFor="multirun-project" className="typography-ui-label font-medium text-foreground">
+                Project <span className="text-destructive">*</span>
+              </label>
+              {projects.length > 0 ? (
+                <Select
+                  value={selectedProjectId ?? undefined}
+                  onValueChange={handleProjectChange}
+                >
+                  <SelectTrigger id="multirun-project" size="lg" className="max-w-full sm:max-w-md">
+                    <SelectValue placeholder="Select a project" />
+                  </SelectTrigger>
+                  <SelectContent fitContent>
+                    {projects.map((project) => (
+                      <SelectItem key={project.id} value={project.id} className="max-w-[24rem] truncate">
+                        {projectSelectLabel(project)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <p className="typography-micro text-muted-foreground">Add a project to use Multi-Run.</p>
+              )}
+            </div>
+
+             {/* Group name (required) */}
             <div className="space-y-2">
               <label htmlFor="group-name" className="typography-ui-label font-medium text-foreground">
                 Group name <span className="text-destructive">*</span>
@@ -426,7 +496,7 @@ export const MultiRunLauncher: React.FC<MultiRunLauncherProps> = ({
                   Base branch
                 </label>
                 <BranchSelector
-                  directory={currentDirectory}
+                  directory={selectedProjectDirectory}
                   value={worktreeBaseBranch}
                   onChange={setWorktreeBaseBranch}
                   id="multirun-worktree-base-branch"

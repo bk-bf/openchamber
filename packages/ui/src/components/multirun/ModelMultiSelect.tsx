@@ -97,6 +97,8 @@ export interface ModelMultiSelectProps {
   showChips?: boolean;
   /** Maximum models allowed */
   maxModels?: number;
+  /** Optional className for add model trigger button */
+  addButtonClassName?: string;
 }
 
 /**
@@ -111,6 +113,7 @@ export const ModelMultiSelect: React.FC<ModelMultiSelectProps> = ({
   addButtonLabel = 'Add model',
   showChips = true,
   maxModels,
+  addButtonClassName,
 }) => {
   const { providers, modelsMetadata } = useConfigStore();
   const { favoriteModelsList, recentModelsList } = useModelLists();
@@ -308,7 +311,15 @@ export const ModelMultiSelect: React.FC<ModelMultiSelectProps> = ({
             type="button"
             variant="outline"
             size="sm"
-            className={CHIP_HEIGHT_CLASS}
+            className={cn(
+              CHIP_HEIGHT_CLASS,
+              '!border-border/80 !bg-[var(--surface-subtle)]/95 !backdrop-blur-sm hover:!bg-[var(--interactive-hover)]/70',
+              addButtonClassName,
+            )}
+            style={{
+              backdropFilter: 'blur(10px)',
+              WebkitBackdropFilter: 'blur(10px)',
+            }}
             onClick={() => setIsOpen(!isOpen)}
           >
             <RiAddLine className="h-3.5 w-3.5 mr-1" />
@@ -379,7 +390,13 @@ export const ModelMultiSelect: React.FC<ModelMultiSelectProps> = ({
             let currentFlatIndex = 0;
 
             return (
-              <div style={{ backgroundColor: 'var(--surface-elevated)' }} className="absolute bottom-full left-0 mb-1 z-50 border border-border/30 rounded-xl overflow-hidden shadow-none w-[min(380px,calc(100vw-2rem))] flex flex-col">
+              <div
+                className="absolute bottom-full left-0 mb-1 z-50 w-[min(380px,calc(100vw-2rem))] flex flex-col overflow-hidden rounded-xl border border-border/50 bg-[var(--surface-elevated)]/75 shadow-none backdrop-blur-xl supports-[backdrop-filter]:bg-[var(--surface-elevated)]/60"
+                style={{
+                  backdropFilter: 'blur(24px)',
+                  WebkitBackdropFilter: 'blur(24px)',
+                }}
+              >
                 {/* Search input */}
                 <div className="p-2 border-b border-border/40">
                   <div className="relative">
@@ -411,10 +428,7 @@ export const ModelMultiSelect: React.FC<ModelMultiSelectProps> = ({
                     {/* Favorites Section */}
                     {filteredFavorites.length > 0 && (
                       <>
-                        <div
-                          style={{ backgroundColor: 'var(--surface-elevated)' }}
-                          className="typography-micro font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-2 -mx-1 px-3 py-1.5 sticky top-0 z-10 border-b border-border/30"
-                        >
+                        <div className="typography-micro font-semibold text-muted-foreground uppercase tracking-wider sticky top-0 z-10 -mx-1 flex items-center gap-2 border-b border-border/30 bg-[var(--surface-elevated)]/80 px-3 py-1.5 backdrop-blur-md supports-[backdrop-filter]:bg-[var(--surface-elevated)]/60">
                           <RiStarFill className="h-4 w-4 text-primary" />
                           Favorites
                         </div>
@@ -429,10 +443,7 @@ export const ModelMultiSelect: React.FC<ModelMultiSelectProps> = ({
                     {filteredRecents.length > 0 && (
                       <>
                         {filteredFavorites.length > 0 && <div className="h-px bg-border/40 my-1" />}
-                        <div
-                          style={{ backgroundColor: 'var(--surface-elevated)' }}
-                          className="typography-micro font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-2 -mx-1 px-3 py-1.5 sticky top-0 z-10 border-b border-border/30"
-                        >
+                        <div className="typography-micro font-semibold text-muted-foreground uppercase tracking-wider sticky top-0 z-10 -mx-1 flex items-center gap-2 border-b border-border/30 bg-[var(--surface-elevated)]/80 px-3 py-1.5 backdrop-blur-md supports-[backdrop-filter]:bg-[var(--surface-elevated)]/60">
                           <RiTimeLine className="h-4 w-4" />
                           Recent
                         </div>
@@ -452,7 +463,7 @@ export const ModelMultiSelect: React.FC<ModelMultiSelectProps> = ({
                     {filteredProviders.map((provider, index) => (
                       <React.Fragment key={provider.id}>
                         {index > 0 && <div className="h-px bg-border/40 my-1" />}
-                        <div style={{ backgroundColor: 'var(--surface-elevated)' }} className="typography-micro font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-2 -mx-1 px-3 py-1.5 sticky top-0 z-10 border-b border-border/30">
+                        <div className="typography-micro font-semibold text-muted-foreground uppercase tracking-wider sticky top-0 z-10 -mx-1 flex items-center gap-2 border-b border-border/30 bg-[var(--surface-elevated)]/80 px-3 py-1.5 backdrop-blur-md supports-[backdrop-filter]:bg-[var(--surface-elevated)]/60">
                           <ProviderLogo
                             providerId={provider.id}
                             className="h-4 w-4 flex-shrink-0"
@@ -513,7 +524,14 @@ export const ModelMultiSelect: React.FC<ModelMultiSelectProps> = ({
                         onUpdate(index, { ...model, variant: nextVariant });
                       }}
                     >
-                      <SelectTrigger size="chip" className="px-2 gap-1.5 rounded-md bg-interactive-selection/20 border-border/30 hover:bg-interactive-hover/30 typography-meta font-medium text-foreground">
+                      <SelectTrigger
+                        size="chip"
+                        className="px-2 gap-1.5 rounded-md !border-border/80 !bg-[var(--surface-subtle)]/95 !backdrop-blur-sm hover:!bg-[var(--interactive-hover)]/70 typography-meta font-medium text-foreground"
+                        style={{
+                          backdropFilter: 'blur(10px)',
+                          WebkitBackdropFilter: 'blur(10px)',
+                        }}
+                      >
                         <RiBrainAi3Line
                           className={cn(
                             'h-3.5 w-3.5 flex-shrink-0',
