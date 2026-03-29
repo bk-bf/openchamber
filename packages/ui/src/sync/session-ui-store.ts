@@ -38,6 +38,7 @@ import { setActiveSession } from "./sync-context"
 import {
   deleteSession as deleteSessionAction,
   archiveSession as archiveSessionAction,
+  optimisticSend,
 } from "./session-actions"
 
 export type { AttachedFile }
@@ -97,17 +98,25 @@ function routeMessage(params: {
     }
   }
 
-  // Normal prompt
-  return opencodeClient.sendMessage({
-    id: params.sessionId,
+  // Normal prompt — optimistic insert so message appears instantly
+  return optimisticSend({
+    sessionId: params.sessionId,
+    content: params.content,
     providerID: params.providerID,
     modelID: params.modelID,
-    text: params.content,
     agent: params.agent,
-    variant: params.variant,
     files: params.files,
-    additionalParts: params.additionalParts,
-  }).then(() => {})
+    send: () => opencodeClient.sendMessage({
+      id: params.sessionId,
+      providerID: params.providerID,
+      modelID: params.modelID,
+      text: params.content,
+      agent: params.agent,
+      variant: params.variant,
+      files: params.files,
+      additionalParts: params.additionalParts,
+    }).then(() => {}),
+  })
 }
 
 // ---------------------------------------------------------------------------

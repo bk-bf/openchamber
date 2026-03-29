@@ -130,7 +130,7 @@ export async function unshareSession(sessionId: string): Promise<Session | null>
 }
 
 // ---------------------------------------------------------------------------
-// Message sending
+// Optimistic message send — insert user message before API call, rollback on error
 // ---------------------------------------------------------------------------
 
 let messageCounter = 0
@@ -141,119 +141,85 @@ function ascendingId(prefix: string): string {
   return `${prefix}_${now}${seq}`
 }
 
-export async function sendMessage(
-  sessionId: string,
-  content: string,
-  providerID: string,
-  modelID: string,
-  agent?: string,
-  images?: Array<{ id?: string; type: "file"; mime: string; url: string; filename: string }>,
-  variant?: string,
-): Promise<void> {
-  const messageID = ascendingId("message")
+/**
+ * Wraps an async send operation with optimistic user-message insertion.
+ * The message + parts appear instantly in the child store. On error they
+ * are rolled back and the session status reverts to idle.
+ */
+export async function optimisticSend(input: {
+  sessionId: string
+  content: string
+  providerID: string
+  modelID: string
+  agent?: string
+  files?: Array<{ type: "file"; mime: string; url: string; filename: string }>
+  /** The actual API call to perform after optimistic insert */
+  send: () => Promise<void>
+}): Promise<void> {
   const store = dirStore()
-
-  // Check if it's a slash command
   const current = store.getState()
-  const [head, ...tail] = content.split(" ")
-  const cmd = head?.startsWith("/") ? head.slice(1) : undefined
-  const commands = current.command
-  const isCommand = cmd && commands.find((c) => c.name === cmd)
 
-  // Build parts for non-command messages
+  const messageID = ascendingId("message")
   const textPartId = ascendingId("part")
-  const msgParts: Array<{ id: string; type: "text"; text: string } | { id: string; type: "file"; mime: string; url: string; filename?: string }> = isCommand
-    ? []
-    : [{ id: textPartId, type: "text" as const, text: content }]
 
-  if (!isCommand && images) {
-    for (const img of images) {
-      msgParts.push({
-        id: img.id ?? ascendingId("part"),
-        type: "file" as const,
-        mime: img.mime,
-        url: img.url,
-        filename: img.filename,
-      })
+  const msgParts: Array<{ id: string; type: string; text?: string; mime?: string; url?: string; filename?: string }> = [
+    { id: textPartId, type: "text" as const, text: input.content },
+  ]
+  if (input.files) {
+    for (const f of input.files) {
+      msgParts.push({ id: ascendingId("part"), type: "file" as const, mime: f.mime, url: f.url, filename: f.filename })
     }
   }
 
-  // Optimistic: set busy + insert user message immediately
   const optimisticMessage = {
     id: messageID,
     role: "user" as const,
-    sessionID: sessionId,
+    sessionID: input.sessionId,
     parentID: "",
-    modelID: modelID,
-    providerID: providerID,
+    modelID: input.modelID,
+    providerID: input.providerID,
     system: "",
-    agent: agent ?? "",
-    model: `${providerID}/${modelID}`,
+    agent: input.agent ?? "",
+    model: `${input.providerID}/${input.modelID}`,
     metadata: {} as Record<string, unknown>,
     time: { created: Date.now(), completed: 0 },
   } as unknown as Message
-
-  const optimisticParts: Part[] = isCommand
-    ? [{ id: textPartId, type: "text", text: content } as Part]
-    : msgParts.map((p) => ({ ...p } as Part))
 
   const draft: OptimisticStore = {
     message: { ...current.message },
     part: { ...current.part },
   }
   applyOptimisticAdd(draft, {
-    sessionID: sessionId,
+    sessionID: input.sessionId,
     message: optimisticMessage,
-    parts: optimisticParts,
+    parts: msgParts.map((p) => ({ ...p } as Part)),
   })
 
   store.setState({
     session_status: {
       ...current.session_status,
-      [sessionId]: { type: "busy" as const },
+      [input.sessionId]: { type: "busy" as const },
     },
     message: draft.message as Record<string, Message[]>,
     part: draft.part as Record<string, Part[]>,
   })
 
   try {
-    if (isCommand) {
-      await sdk().session.command({
-        sessionID: sessionId,
-        directory: dir(),
-        command: cmd!,
-        arguments: tail.join(" "),
-        agent,
-        model: `${providerID}/${modelID}`,
-        variant,
-        parts: images,
-      })
-    } else {
-      await sdk().session.promptAsync({
-        sessionID: sessionId,
-        directory: dir(),
-        agent,
-        model: { providerID, modelID },
-        messageID,
-        parts: msgParts,
-        variant,
-      })
-    }
+    await input.send()
   } catch (error) {
-    // Revert optimistic message + busy status
     const s = store.getState()
     const revertDraft: OptimisticStore = {
       message: { ...s.message },
       part: { ...s.part },
     }
     applyOptimisticRemove(revertDraft, {
-      sessionID: sessionId,
+      sessionID: input.sessionId,
       messageID,
     })
     store.setState({
       session_status: {
         ...s.session_status,
-        [sessionId]: { type: "idle" as const },
+        [input.sessionId]: { type: "idle" as const },
       },
       message: revertDraft.message as Record<string, Message[]>,
       part: revertDraft.part as Record<string, Part[]>,

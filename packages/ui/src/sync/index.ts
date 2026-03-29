@@ -133,7 +133,7 @@ export {
   updateSessionTitle,
   shareSession,
   unshareSession,
-  sendMessage,
+  optimisticSend,
   abortCurrentOperation,
   respondToPermission,
   dismissPermission,
