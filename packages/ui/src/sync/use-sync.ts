@@ -264,7 +264,7 @@ export function useSync() {
         setMetaFor(sessionID, { loading: false })
       }
     },
-    [store, fetchMessages, getMetaFor, setMetaFor, getOptimistic, clearOptimistic],
+    [store, fetchMessages, getMetaFor, setMetaFor, getOptimistic, clearOptimistic, directory],
   )
 
   // Sync a session (load if not cached)
@@ -324,7 +324,7 @@ export function useSync() {
       promise.finally(() => inflight.current.delete(key))
       return promise
     },
-    [store, sdk, keyFor, touch, getMetaFor, loadMessages],
+    [store, sdk, keyFor, touch, getMetaFor, loadMessages, directory],
   )
 
   // Load more (pagination)
