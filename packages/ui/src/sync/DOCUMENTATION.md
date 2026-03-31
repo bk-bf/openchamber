@@ -1,4 +1,107 @@
-# Event handling & store update rules
+# Sync architecture, event handling & store update rules
+
+## Scope
+
+This document covers the current client-side session/data architecture in `packages/ui/src/sync` and the rules for updating stores safely.
+
+There are **two distinct session data scopes** in the UI:
+
+1. **Directory-scoped sync stores**
+   - Owned by the sync layer child stores created in `sync-context.tsx`
+   - Source for per-directory live session/message/part/permission/question state
+   - Backed by SSE / directory-scoped polling
+   - Read via hooks like `useSessions()`, `useDirectorySync()`, `getSyncSessions()`, `getDirectoryState()`
+
+2. **Global sessions cache**
+   - Owned by `packages/ui/src/stores/useGlobalSessionsStore.ts`
+   - Shared source of truth for the Sessions sidebar global lists and Session Retention cleanup
+   - Holds:
+     - global active sessions
+     - global archived sessions
+     - active sessions indexed by directory
+
+These two scopes are intentionally different.
+
+### Why both exist
+
+The directory-scoped sync stores are **not** a complete global view.
+
+- They are created lazily per directory
+- They only contain data for directories initialized in the current app session
+- They are optimized for live per-directory domain data
+- They do not maintain the complete global active+archived session view needed by the sidebar and retention settings
+
+So:
+
+- Use the **directory sync stores** for per-directory live session/message state
+- Use the **global sessions store** for sidebar/retention global session lists
+
+## Ownership map
+
+| Layer / Store | Owns | Scope |
+|---|---|---|
+| child directory stores in `sync-context.tsx` | `session`, `message`, `part`, `permission`, `question`, etc. | One directory |
+| `session-ui-store.ts` | Session selection, draft lifecycle, abort prompts, worktree metadata, SDK-facing action entrypoints | App UI state |
+| `useGlobalSessionsStore.ts` | Global active sessions, global archived sessions, `sessionsByDirectory` | All opened project/worktree session lists |
+| `viewport-store.ts` | Scroll anchors, session memory, loading indicators | App UI state |
+| `input-store.ts` | Draft input state, attached files, synthetic parts | App UI state |
+| `selection-store.ts` | Model/agent/variant selections | App UI state |
+| `voice-store.ts` | Voice state | App UI state |
+
+## Session list rules
+
+### Directory-scoped session list
+
+Use the directory-scoped sync store when the UI needs the live session list for the **current directory**.
+
+Examples:
+
+- current chat/session switching
+- per-directory session/message bootstrap
+- session/message/part SSE updates
+
+### Global session list
+
+Use `useGlobalSessionsStore` when the UI needs a **shared global session view**.
+
+Current consumers:
+
+- `SessionSidebar.tsx`
+- `useSessionAutoCleanup.ts`
+
+### Mutation responsibility
+
+`useGlobalSessionsStore` is not maintained by SSE directly. It is kept correct by:
+
+1. shared global fetch/reconciliation via `loadSessions()` / `refreshGlobalSessions()`
+2. direct mutation from session actions after successful SDK calls:
+   - create
+   - title update
+   - share
+   - unshare
+   - archive
+   - delete
+   - retention cleanup batch archive/delete
+
+This keeps sidebar/retention UI responsive without requiring a refetch after every change.
+
+## Session action rules
+
+Session actions live in `session-actions.ts` and are the canonical place for SDK-calling session mutations that affect global session lists.
+
+Rules:
+
+1. If an action mutates session list membership or visible session metadata, update `useGlobalSessionsStore` there.
+2. If an action targets a session by ID, resolve the **session's own directory**. Do not assume the current directory is correct.
+3. `session-ui-store.ts` should delegate to `session-actions.ts` for these mutations instead of duplicating SDK calls.
+
+Examples of global-store updates performed in `session-actions.ts`:
+
+- `createSession()` -> `upsertSession(session)`
+- `updateSessionTitle()` -> `upsertSession(result.data)`
+- `shareSession()` / `unshareSession()` -> `upsertSession(result.data)`
+- `archiveSession()` -> `archiveSessions([id], archivedAt)`
+- `deleteSession()` -> `removeSessions([id])`
 
 ## The golden rule
 
