@@ -107,18 +107,56 @@ All scripts are in `package.json`.
 - Do not run git/GitHub commands unless explicitly asked.
 - Keep baseline green (run `bun run type-check`, `bun run lint`, `bun run build` before finalizing changes).
 
+## Agent code of conduct
+- Prefer the smallest correct change.
+- Preserve working behavior before improving structure.
+- Do not add cleverness where a direct implementation is enough.
+- Do not infer critical state from weak signals when a stronger source exists.
+- Do not encode policy only in UI; enforce it in core logic.
+- Do not hide data loss, partial failure, or fallback behavior. Make it explicit in code.
+- Finish work end-to-end: implementation, verification, and cleanup.
+
 ## Development rules
 - Keep diffs tight; avoid drive-by refactors.
-- Backend changes: keep web/desktop/vscode runtimes consistent (if relevant).
-- Follow local precedent; search nearby code first.
-- TypeScript: avoid `any`/blind casts; keep ESLint/TS green.
-- React: prefer function components + hooks; class only when needed (e.g. error boundaries).
-- Control flow: avoid nested ternaries; prefer early returns + `if/else`/`switch`.
-- Styling: Tailwind v4; typography via `packages/ui/src/lib/typography.ts`; theme vars via `packages/ui/src/lib/theme/`.
-- Shared UI patterns: for "series of items + divider + series of items" layouts, use shared UI primitives instead of duplicating ad-hoc markup in feature components.
-- Toasts: use custom toast wrapper from `@/components/ui` (backed by `packages/ui/src/components/ui/toast.ts`); do not import `sonner` directly in feature code.
+- Follow local precedent; inspect nearby code before introducing new patterns.
+- Backend changes: keep web, desktop, and VS Code behavior consistent when they share contracts.
+- TypeScript: avoid `any`, blind casts, and shape guessing.
+- React: prefer function components + hooks; use classes only when required.
+- Control flow: prefer early returns and explicit branching over nested ternaries.
+- Styling: Tailwind v4, typography via `packages/ui/src/lib/typography.ts`, theme vars via `packages/ui/src/lib/theme/`.
+- Shared UI patterns: reuse shared primitives before introducing feature-local markup patterns.
+- Toasts: use the wrapper from `@/components/ui`; do not import `sonner` directly in feature code.
 - No new deps unless asked.
-- Never add secrets (`.env`, keys) or log sensitive data.
+- Never add secrets or log sensitive data.
+
+## Architecture patterns
+
+### Thin entrypoints, focused modules
+- Keep orchestration entrypoints thin: `index.js`, bridge files, bootstrap files, provider roots.
+- Move route, domain, and runtime logic into focused modules with clear ownership.
+- Prefer dependency injection over hidden module coupling.
+- Add or update module documentation when ownership changes.
+
+### Strong source of truth
+- Prefer deterministic state over heuristics.
+- Use live server/session state for live activity. Do not let historical anomalies masquerade as current execution.
+- If a fallback is necessary, scope it narrowly to the active entity and treat it as temporary.
+- Restore derived UI state from authoritative records. Example: restore model or agent from the latest user message, not assistant-side guesses.
+
+### Live state vs historical state
+- Derive live UI behavior from live state channels, not persisted history.
+- Use historical records to restore context, not to infer that work is still in progress.
+- If live state is delayed, use the narrowest possible transient fallback and clear it as soon as authoritative state arrives.
+
+### Cross-runtime parity
+- If web defines a route or payload contract that shared UI depends on, keep VS Code and desktop parity where applicable.
+- Shared behavior differences must be intentional and visible in code.
+- Do not ship a web-only assumption into shared UI.
+
+### Partial-failure-safe flows
+- Cross-directory and multi-entity operations must tolerate partial failure.
+- Prefer per-item results, rollback paths, or resumable cleanup over all-or-nothing assumptions.
+- Never leave optimistic state or local caches stranded after failure.
 
 ## CLI Parity and Safety Policy (MANDATORY)
 
@@ -179,6 +217,14 @@ This skill contains all color tokens, semantic logic, decision tree, and usage p
 
 These rules exist because violating them has caused measurable regressions (render cascades, memory bloat, UI jank). They apply to all UI and sync layer work.
 
+### Shared-store render discipline
+
+- **Treat common stores as render fanout boundaries.** An unnecessary reference change in shared state can re-render large parts of the app.
+- **Do not put high-frequency state in broadly consumed stores.** Fast-changing state should live in narrow stores with narrow subscribers.
+- **Update only the fields that changed.** Preserve references for untouched state branches.
+- **Prefer leaf selectors over container selectors.** Subscribe to the smallest stable value that satisfies the component.
+- **Isolate hot consumers.** If a value changes often and only a few components need it, move it to a narrower store or consume it in a memoized child.
+
 ### Zustand referential equality
 
 Zustand skips re-renders when a selector returns the same reference (`Object.is`). Every new object/array reference triggers a re-render in every subscriber.
@@ -201,12 +247,30 @@ A single store with N properties means every subscriber re-evaluates on every st
 - **Gate expensive operations on the hot path.** During streaming, `message.part.delta` and `message.part.updated` fire ~60/sec. Any `findIndex`, `filter`, or iteration added to these handlers multiplies across every event. Gate behind a cheap boolean check first (e.g., check `next[0]` before scanning the array).
 - **Skip no-op updates.** If an incoming event doesn't change the state (same role, same finish, same timestamps), return `false` from the reducer to avoid creating new references.
 - **Coalesce by key.** Same-entity events (e.g., repeated `session.status` for the same session) should replace earlier ones in the queue, not accumulate.
+- **Preserve event ordering semantics.** Reducers and queues must not let stale deltas or out-of-order events corrupt the latest state.
+- **Do not widen live-activity fallbacks.** A fallback for delayed status should inspect only the current trailing entity, not arbitrary historical records.
+
+### Polling payload fidelity
+
+- **Do not let lightweight polling erase rich fields.** If light mode omits fields (e.g., `diffStats`), preserve previous rich data until a heavy follow-up fetch lands.
+- **Use two-phase polling.** Run cheap change detection first; only run heavy status fetches for directories that actually changed.
 
 ### Optimistic updates
 
 - **Use the shadow Map pattern.** Insert optimistic data into the store for instant UI, AND register it in a separate tracking Map. Cleanup happens deterministically via `mergeOptimisticPage` on the next data fetch — not via heuristics in the event reducer.
 - **Pass client-generated IDs to the server.** Use the same ID format as the server (hex-encoded timestamps). Pass `messageID` to `promptAsync` so the server echoes back the same ID. This prevents duplicates and enables in-place replacement.
 - **Rollback on error.** Remove the optimistic entry from both the store and the shadow Map.
+- **Stabilize bridge callbacks.** When wiring hook callbacks into module-level refs, use stable ref wrappers so effects do not loop on changing function identities.
+
+### Session/input consistency
+
+- **Capture send config at queue time.** Queue items must include provider/model/agent/variant snapshot; do not re-resolve from mutable live state at send time.
+- **Keep server-selected attachments sendable.** Preserve server-backed file selections in queue/submit flows and convert them to proper `file://` URLs before sending.
+
+### Bootstrap resilience
+
+- **Treat startup 502/503 as transient.** Retry bootstrap/session-list flows with bounded retries/intervals, especially in VS Code where API readiness can lag bridge startup.
+- **Use polling recovery when failures are swallowed.** If an async loader resolves without throwing on failure, recover with interval retries gated by loaded-state checks.
 
 ### Scroll and DOM
 
@@ -229,6 +293,21 @@ A single store with N properties means every subscriber re-evaluates on every st
 
 - **Never cache directory strings in closures.** Directory can change at any time (worktree switch). Read it dynamically from `opencodeClient.getDirectory()` at call time.
 - **Pass directory hints when the source of truth isn't available yet.** Newly created sessions aren't in the sync store until SSE delivers them. Pass the known directory as a parameter instead of relying on lookup.
+
+## Regression-prevention checklist
+- When adding fallback logic, ask: can stale persisted data keep this path active forever?
+- When deriving UI state, ask: is this live state, historical state, or inferred state?
+- When adding store fields, ask: who reads this, how often does it change, and should it live elsewhere?
+- When touching polling or bootstrap, ask: can a lighter payload erase richer existing data?
+- When handling optimistic updates, ask: where is rollback, reconciliation, and duplicate prevention?
+- When changing shared routes or state contracts, ask: what breaks in web, desktop, and VS Code?
+- When fixing a bug with a heuristic, prefer narrowing the heuristic over widening it.
+
+## Validation expectations
+- Run `bun run type-check`, `bun run lint`, and `bun run build` before finalizing.
+- For hot-path changes, verify behavior under streaming or repeated events, not just static render.
+- For sync or startup changes, verify fresh load, retry/failure, and restart behavior.
+- For session changes, verify create, stream, abort, permission, archive/delete, and revisit flows when relevant.
 
 ## Recent changes
 - Releases + high-level changes: `CHANGELOG.md`

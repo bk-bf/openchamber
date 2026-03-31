@@ -21,7 +21,8 @@ const IDLE_RESULT: SessionActivityResult = {
 
 /**
  * Determines if a session is actively working.
- * Checks session_status AND incomplete assistant messages as fallback.
+ * Checks session_status and, as a narrow fallback, only the trailing
+ * assistant message when its completion update has not landed yet.
  * Returns idle when permissions are pending (permission indicator takes priority).
  */
 export function useSessionActivity(sessionId: string | null | undefined): SessionActivityResult {
@@ -37,15 +38,14 @@ export function useSessionActivity(sessionId: string | null | undefined): Sessio
 
     const phase: SessionActivityPhase = (status?.type ?? 'idle') as SessionActivityPhase;
 
-    // Incomplete assistant message fallback — catches cases where status event is delayed
-    let hasPendingAssistant = false;
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const m = messages[i];
-      if (m.role === 'assistant' && typeof (m as { time?: { completed?: number } }).time?.completed !== 'number') {
-        hasPendingAssistant = true;
-        break;
-      }
-    }
+    // Only trust the trailing assistant message as a transient fallback while
+    // waiting for session.status/message.updated to settle.
+    const lastMessage = messages[messages.length - 1];
+    const hasPendingAssistant = Boolean(
+      lastMessage
+      && lastMessage.role === 'assistant'
+      && typeof (lastMessage as { time?: { completed?: number } }).time?.completed !== 'number',
+    );
 
     const statusWorking = phase !== 'idle';
     const isWorking = statusWorking || hasPendingAssistant;
