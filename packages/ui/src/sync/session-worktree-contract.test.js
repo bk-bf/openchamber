@@ -1,0 +1,398 @@
+import { describe, expect, test } from 'bun:test';
+import {
+  resolveSessionWorktreeState,
+  formatSessionWorktreeBadge,
+  getSessionWorktreeRepairActions,
+  isWithinWorktreeRoot,
+  buildSessionTargetOptions,
+} from './session-worktree-contract';
+
+describe('isWithinWorktreeRoot', () => {
+  test('returns true when candidate equals root', () => {
+    expect(isWithinWorktreeRoot('/repo/worktrees/feat-a', '/repo/worktrees/feat-a')).toBe(true);
+  });
+
+  test('returns true when candidate is a subdirectory of root', () => {
+    expect(isWithinWorktreeRoot('/repo/worktrees/feat-a/src', '/repo/worktrees/feat-a')).toBe(true);
+  });
+
+  test('returns false when candidate is outside root', () => {
+    expect(isWithinWorktreeRoot('/tmp/outside', '/repo/worktrees/feat-a')).toBe(false);
+  });
+
+  test('returns false when either is null/empty', () => {
+    expect(isWithinWorktreeRoot(null, '/repo')).toBe(false);
+    expect(isWithinWorktreeRoot('/repo', null)).toBe(false);
+    expect(isWithinWorktreeRoot('', '/repo')).toBe(false);
+  });
+});
+
+describe('resolveSessionWorktreeState', () => {
+  test('keeps cwd when inside worktreeRoot', () => {
+    const result = resolveSessionWorktreeState({
+      sessionDirectory: '/repo/worktrees/feat-a/src',
+      metadata: {
+        path: '/repo/worktrees/feat-a',
+        projectDirectory: '/repo',
+        branch: 'feat-a',
+        label: 'feat-a',
+        worktreeRoot: '/repo/worktrees/feat-a',
+        worktreeStatus: 'ready',
+        headState: 'branch',
+      },
+      cwdExists: true,
+    });
+
+    expect(result.cwd).toBe('/repo/worktrees/feat-a/src');
+    expect(result.worktreeRoot).toBe('/repo/worktrees/feat-a');
+    expect(result.degraded).toBe(false);
+    expect(result.worktreeStatus).toBe('ready');
+    expect(result.headState).toBe('branch');
+  });
+
+  test('falls back to worktreeRoot when cwd is invalid', () => {
+    const result = resolveSessionWorktreeState({
+      sessionDirectory: '/tmp/outside',
+      metadata: {
+        path: '/repo/worktrees/feat-a',
+        projectDirectory: '/repo',
+        branch: 'feat-a',
+        label: 'feat-a',
+        worktreeRoot: '/repo/worktrees/feat-a',
+        worktreeStatus: 'ready',
+        headState: 'branch',
+      },
+      cwdExists: false,
+    });
+
+    expect(result.cwd).toBe('/repo/worktrees/feat-a');
+    expect(result.degraded).toBe(true);
+  });
+
+  test('falls back to worktreeRoot when cwd escapes root', () => {
+    const result = resolveSessionWorktreeState({
+      sessionDirectory: '/repo/worktrees/feat-a/src',
+      metadata: {
+        path: '/repo/worktrees/feat-a',
+        projectDirectory: '/repo',
+        branch: 'feat-a',
+        label: 'feat-a',
+        worktreeRoot: '/repo/worktrees/feat-a',
+        worktreeStatus: 'ready',
+        headState: 'branch',
+      },
+      cwdExists: true,
+    });
+
+    // cwd is inside worktreeRoot so should be kept
+    expect(result.cwd).toBe('/repo/worktrees/feat-a/src');
+    expect(result.degraded).toBe(false);
+  });
+
+  test('marks missing metadata as legacy with invalid status', () => {
+    const result = resolveSessionWorktreeState({
+      sessionDirectory: '/repo',
+      metadata: null,
+      cwdExists: true,
+    });
+
+    expect(result.legacy).toBe(true);
+    expect(result.worktreeStatus).toBe('invalid');
+    expect(result.degraded).toBe(true);
+  });
+
+  test('preserves unborn head state', () => {
+    const result = resolveSessionWorktreeState({
+      sessionDirectory: '/repo/worktrees/new-branch',
+      metadata: {
+        path: '/repo/worktrees/new-branch',
+        projectDirectory: '/repo',
+        branch: '',
+        label: 'new-branch',
+        worktreeRoot: '/repo/worktrees/new-branch',
+        worktreeStatus: 'ready',
+        headState: 'unborn',
+      },
+      cwdExists: true,
+    });
+
+    expect(result.headState).toBe('unborn');
+  });
+
+  test('recovers legacy session when runtime canonicalization resolves a worktree', () => {
+    const result = resolveSessionWorktreeState({
+      sessionDirectory: '/repo/worktrees/feat-a/src',
+      metadata: null,
+      cwdExists: true,
+      runtimeResolution: {
+        worktreeRoot: '/repo/worktrees/feat-a',
+        cwd: '/repo/worktrees/feat-a/src',
+        branch: 'feat-a',
+        headState: 'branch',
+        worktreeStatus: 'ready',
+        worktreeSource: 'existing',
+        legacy: false,
+        degraded: false,
+      },
+    });
+
+    expect(result.legacy).toBe(false);
+    expect(result.worktreeRoot).toBe('/repo/worktrees/feat-a');
+    expect(result.degraded).toBe(false);
+  });
+
+  test('defaults detached when branch is empty but headState not specified', () => {
+    const result = resolveSessionWorktreeState({
+      sessionDirectory: '/repo/worktrees/detached',
+      metadata: {
+        path: '/repo/worktrees/detached',
+        projectDirectory: '/repo',
+        branch: '',
+        label: 'detached',
+      },
+      cwdExists: true,
+    });
+
+    expect(result.headState).toBe('detached');
+  });
+
+  test('canonical producer metadata preserves branch/detached/unborn states', () => {
+    // branch state
+    const branchResult = resolveSessionWorktreeState({
+      sessionDirectory: '/repo/worktrees/feat-a',
+      metadata: {
+        path: '/repo/worktrees/feat-a',
+        projectDirectory: '/repo',
+        branch: 'feat-a',
+        label: 'feat-a',
+        worktreeRoot: '/repo/worktrees/feat-a',
+        worktreeStatus: 'ready',
+        headState: 'branch',
+        worktreeSource: 'created-for-session',
+      },
+      cwdExists: true,
+    });
+    expect(branchResult.headState).toBe('branch');
+    expect(branchResult.worktreeStatus).toBe('ready');
+
+    // detached state
+    const detachedResult = resolveSessionWorktreeState({
+      sessionDirectory: '/repo/worktrees/detached',
+      metadata: {
+        path: '/repo/worktrees/detached',
+        projectDirectory: '/repo',
+        branch: '',
+        label: 'detached',
+        worktreeRoot: '/repo/worktrees/detached',
+        worktreeStatus: 'ready',
+        headState: 'detached',
+        worktreeSource: 'existing',
+      },
+      cwdExists: true,
+    });
+    expect(detachedResult.headState).toBe('detached');
+
+    // unborn state
+    const unbornResult = resolveSessionWorktreeState({
+      sessionDirectory: '/repo/worktrees/unborn',
+      metadata: {
+        path: '/repo/worktrees/unborn',
+        projectDirectory: '/repo',
+        branch: '',
+        label: 'unborn',
+        worktreeRoot: '/repo/worktrees/unborn',
+        worktreeStatus: 'ready',
+        headState: 'unborn',
+        worktreeSource: 'created-for-session',
+      },
+      cwdExists: true,
+    });
+    expect(unbornResult.headState).toBe('unborn');
+  });
+});
+
+describe('formatSessionWorktreeBadge', () => {
+  test('formats needs-attention badge for invalid worktree', () => {
+    const badge = formatSessionWorktreeBadge({
+      worktreeStatus: 'invalid',
+      degraded: true,
+      legacy: false,
+      branch: null,
+      headState: 'detached',
+      worktreeRoot: null,
+      cwd: null,
+      worktreeSource: null,
+    });
+    expect(badge).toBe('Needs attention');
+  });
+
+  test('formats legacy session badge', () => {
+    const badge = formatSessionWorktreeBadge({
+      legacy: true,
+      worktreeStatus: 'invalid',
+      degraded: true,
+      branch: null,
+      headState: 'branch',
+      worktreeRoot: null,
+      cwd: null,
+      worktreeSource: null,
+    });
+    expect(badge).toBe('Legacy session');
+  });
+
+  test('formats detached HEAD', () => {
+    const badge = formatSessionWorktreeBadge({
+      headState: 'detached',
+      degraded: false,
+      legacy: false,
+      branch: null,
+      worktreeStatus: 'ready',
+      worktreeRoot: '/repo',
+      cwd: '/repo',
+      worktreeSource: 'existing',
+    });
+    expect(badge).toBe('Detached HEAD');
+  });
+
+  test('formats unborn branch', () => {
+    const badge = formatSessionWorktreeBadge({
+      headState: 'unborn',
+      degraded: false,
+      legacy: false,
+      branch: null,
+      worktreeStatus: 'ready',
+      worktreeRoot: '/repo',
+      cwd: '/repo',
+      worktreeSource: 'existing',
+    });
+    expect(badge).toBe('Unborn branch');
+  });
+
+  test('formats current branch name', () => {
+    const badge = formatSessionWorktreeBadge({
+      branch: 'feature/my-branch',
+      headState: 'branch',
+      degraded: false,
+      legacy: false,
+      worktreeStatus: 'ready',
+      worktreeRoot: '/repo',
+      cwd: '/repo',
+      worktreeSource: 'existing',
+    });
+    expect(badge).toBe('Current branch: feature/my-branch');
+  });
+
+  test('formats missing worktree', () => {
+    const badge = formatSessionWorktreeBadge({
+      worktreeStatus: 'missing',
+      degraded: true,
+      legacy: false,
+      branch: null,
+      headState: 'branch',
+      worktreeRoot: null,
+      cwd: null,
+      worktreeSource: null,
+    });
+    expect(badge).toBe('Worktree missing');
+  });
+
+  test('formats needs-attention for in-progress git operation', () => {
+    const badge = formatSessionWorktreeBadge({
+      worktreeStatus: 'ready',
+      attentionReason: 'merge',
+      degraded: false,
+      legacy: false,
+      branch: 'main',
+      headState: 'branch',
+      worktreeRoot: '/repo',
+      cwd: '/repo',
+      worktreeSource: 'existing',
+    });
+    expect(badge).toBe('Needs attention');
+  });
+});
+
+describe('getSessionWorktreeRepairActions', () => {
+  test('returns open-without-worktree-features for missing worktree', () => {
+    const actions = getSessionWorktreeRepairActions({
+      worktreeStatus: 'missing',
+      degraded: true,
+      legacy: false,
+      branch: null,
+      headState: 'branch',
+      worktreeRoot: null,
+      cwd: null,
+      worktreeSource: null,
+    });
+    expect(actions).toContain('open-without-worktree-features');
+  });
+
+  test('returns open-without-worktree-features for invalid worktree', () => {
+    const actions = getSessionWorktreeRepairActions({
+      worktreeStatus: 'invalid',
+      degraded: true,
+      legacy: false,
+      branch: null,
+      headState: 'branch',
+      worktreeRoot: null,
+      cwd: null,
+      worktreeSource: null,
+    });
+    expect(actions).toContain('open-without-worktree-features');
+  });
+
+  test('returns empty for ready worktree', () => {
+    const actions = getSessionWorktreeRepairActions({
+      worktreeStatus: 'ready',
+      degraded: false,
+      legacy: false,
+      branch: 'main',
+      headState: 'branch',
+      worktreeRoot: '/repo',
+      cwd: '/repo',
+      worktreeSource: 'existing',
+    });
+    expect(actions).toHaveLength(0);
+  });
+});
+
+describe('buildSessionTargetOptions', () => {
+  test('labels root directory and isolated worktrees distinctly', () => {
+    const options = buildSessionTargetOptions({
+      projectRoot: '/repo',
+      rootBranch: 'main',
+      worktrees: [
+        { path: '/repo/.worktrees/feat-a', branch: 'feat-a', label: 'feat-a', projectDirectory: '/repo' },
+      ],
+    });
+
+    expect(options[0]?.label).toContain('main');
+    expect(options[1]?.label).toContain('feat-a');
+    expect(options[0]?.kind).toBe('root');
+    expect(options[1]?.kind).toBe('worktree');
+  });
+
+  test('excludes worktree path that equals projectRoot', () => {
+    const options = buildSessionTargetOptions({
+      projectRoot: '/repo',
+      rootBranch: 'main',
+      worktrees: [
+        { path: '/repo', branch: 'main', label: 'main', projectDirectory: '/repo' },
+        { path: '/repo/worktrees/feat-a', branch: 'feat-a', label: 'feat-a', projectDirectory: '/repo' },
+      ],
+    });
+
+    expect(options).toHaveLength(2); // root + one worktree, not three
+  });
+
+  test('handles empty worktrees array', () => {
+    const options = buildSessionTargetOptions({
+      projectRoot: '/repo',
+      rootBranch: 'main',
+      worktrees: [],
+    });
+
+    expect(options).toHaveLength(1);
+    expect(options[0]?.kind).toBe('root');
+  });
+});
