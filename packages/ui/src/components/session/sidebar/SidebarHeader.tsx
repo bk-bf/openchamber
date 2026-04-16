@@ -96,20 +96,6 @@ export function SidebarHeader(props: Props): React.ReactNode {
                 <TooltipTrigger asChild>
                   <button
                     type="button"
-                    onClick={openScheduledTasksDialog}
-                    className={headerActionButtonClass}
-                    aria-label="Scheduled tasks"
-                  >
-                    <RiCalendarScheduleLine className={headerActionIconClass} />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="bottom" sideOffset={4}><p>Scheduled tasks</p></TooltipContent>
-              </Tooltip>
-
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button
-                    type="button"
                     onClick={handleOpenDirectoryDialog}
                     className={headerActionButtonClass}
                     aria-label="Add project"
@@ -132,9 +118,7 @@ export function SidebarHeader(props: Props): React.ReactNode {
                 </TooltipTrigger>
                 <TooltipContent side="bottom" sideOffset={4}><p>New session</p></TooltipContent>
               </Tooltip>
-            </div>
 
-            <div className="flex items-center gap-1.5">
               <Tooltip>
                 <TooltipTrigger asChild>
                   <button
@@ -148,6 +132,22 @@ export function SidebarHeader(props: Props): React.ReactNode {
                   </button>
                 </TooltipTrigger>
                 <TooltipContent side="bottom" sideOffset={4}><p>New multi-run</p></TooltipContent>
+              </Tooltip>
+            </div>
+
+            <div className="flex items-center gap-1.5">
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    onClick={openScheduledTasksDialog}
+                    className={headerActionButtonClass}
+                    aria-label="Scheduled tasks"
+                  >
+                    <RiCalendarScheduleLine className={headerActionIconClass} />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" sideOffset={4}><p>Scheduled tasks</p></TooltipContent>
               </Tooltip>
 
               {useMobileNotesPanel ? (
