@@ -509,17 +509,32 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
   const [isSearchOpen, setIsSearchOpen] = React.useState(false);
   const [isFloatingToolbarOpen, setIsFloatingToolbarOpen] = React.useState(false);
   const floatingToolbarRef = React.useRef<HTMLDivElement | null>(null);
+  const toolbarDropdownOpenCountRef = React.useRef(0);
+
+  const handleToolbarDropdownOpenChange = React.useCallback((open: boolean) => {
+    toolbarDropdownOpenCountRef.current = Math.max(
+      0,
+      toolbarDropdownOpenCountRef.current + (open ? 1 : -1),
+    );
+  }, []);
+
+  const isClickInsidePortalledMenu = React.useCallback((target: EventTarget | null) => {
+    if (!(target instanceof Element)) return false;
+    return target.closest('[data-slot="dropdown-menu-content"], [data-slot="dropdown-menu-item"]') !== null;
+  }, []);
 
   React.useEffect(() => {
     if (!isFloatingToolbarOpen) return;
     const handler = (event: MouseEvent) => {
+      if (toolbarDropdownOpenCountRef.current > 0) return;
+      if (isClickInsidePortalledMenu(event.target)) return;
       if (floatingToolbarRef.current && !floatingToolbarRef.current.contains(event.target as Node)) {
         setIsFloatingToolbarOpen(false);
       }
     };
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
-  }, [isFloatingToolbarOpen]);
+  }, [isClickInsidePortalledMenu, isFloatingToolbarOpen]);
   const [textViewMode, setTextViewMode] = React.useState<'view' | 'edit'>('edit');
   const [mdViewMode, setMdViewMode] = React.useState<'preview' | 'edit'>('edit');
   const [jsonViewMode, setJsonViewMode] = React.useState<'tree' | 'text'>('tree');
@@ -2347,7 +2362,7 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
           ) : null
         )}
 
-        <DropdownMenu>
+        <DropdownMenu onOpenChange={handleToolbarDropdownOpenChange}>
           <DropdownMenuTrigger asChild>
             <Button
               variant="ghost"
@@ -2751,7 +2766,10 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
             ref={floatingToolbarRef}
             className="absolute right-3 top-3 z-30"
             onMouseEnter={() => setIsFloatingToolbarOpen(true)}
-            onMouseLeave={() => setIsFloatingToolbarOpen(false)}
+            onMouseLeave={() => {
+              if (toolbarDropdownOpenCountRef.current > 0) return;
+              setIsFloatingToolbarOpen(false);
+            }}
           >
             {isFloatingToolbarOpen ? (
               renderFloatingFileControls()
