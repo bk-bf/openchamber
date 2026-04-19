@@ -133,7 +133,7 @@ export const OpenInAppButton = ({ directory, activeFilePath, className }: OpenIn
         className={cn(
           'app-region-no-drag inline-flex h-7 items-center self-center rounded-md',
           'bg-[var(--surface-elevated)] overflow-hidden',
-          'shadow-[0_0_0_1px_rgba(14,18,27,0.12),0_1px_2px_rgba(14,18,27,0.12),0_2px_4px_-1px_rgba(14,18,27,0.08)]',
+          'shadow-[0_0_0_1px_rgba(14,18,27,0.12),0_1px_2px_rgba(14,18,27,0.12),0_2px_4px_-1px_rgba(14,18,27,0.08)] dark:shadow-[0_0_0_1px_rgba(255,255,255,0.10),0_1px_2px_rgba(0,0,0,0.30),0_2px_4px_-1px_rgba(0,0,0,0.20)]',
           className
         )}
     >
