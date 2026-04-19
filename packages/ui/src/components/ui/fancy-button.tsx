@@ -4,65 +4,49 @@ import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/utils";
 import { Slot } from "@/components/ui/slot";
 
-// Matte solid: thin inner top highlight + pill-style elevation (hairline
-// outer ring + stacked tight/soft drops with navy tint). Dark theme swaps
-// the navy ring for a subtle white one so the edge reads on dark surfaces.
-const SOLID_SHADOW =
-  "shadow-[inset_0_1px_0_rgba(255,255,255,0.14),0_0_0_1px_rgba(14,18,27,0.12),0_1px_2px_rgba(14,18,27,0.12),0_2px_4px_-1px_rgba(14,18,27,0.08)] dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.14),0_0_0_1px_rgba(255,255,255,0.10),0_1px_2px_rgba(0,0,0,0.30),0_2px_4px_-1px_rgba(0,0,0,0.20)]";
+// Flat tinted fancy-button: pale tinted fill + saturated tinted border +
+// saturated tinted text. Matches the Button primitive design language.
+const TINT_PRIMARY = [
+  "bg-[color-mix(in_srgb,var(--primary-base)_10%,var(--background))]",
+  "text-[var(--primary-base)]",
+  "border border-[color-mix(in_srgb,var(--primary-base)_12%,transparent)]",
+  "hover:bg-[color-mix(in_srgb,var(--primary-base)_16%,var(--background))]",
+  "active:bg-[color-mix(in_srgb,var(--primary-base)_22%,var(--background))]",
+  "dark:bg-[color-mix(in_srgb,var(--primary-base)_16%,transparent)]",
+  "dark:border-[color-mix(in_srgb,var(--primary-base)_20%,transparent)]",
+  "dark:hover:bg-[color-mix(in_srgb,var(--primary-base)_22%,transparent)]",
+  "dark:active:bg-[color-mix(in_srgb,var(--primary-base)_30%,transparent)]",
+].join(" ");
 
-const SOLID_SHADOW_HOVER =
-  "hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.18),0_0_0_1px_rgba(14,18,27,0.14),0_2px_4px_rgba(14,18,27,0.14),0_4px_8px_-2px_rgba(14,18,27,0.10)] dark:hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.18),0_0_0_1px_rgba(255,255,255,0.14),0_2px_4px_rgba(0,0,0,0.35),0_4px_8px_-2px_rgba(0,0,0,0.25)]";
-
-const SOLID_SHADOW_ACTIVE =
-  "active:shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_0_0_1px_rgba(14,18,27,0.14),0_1px_1px_rgba(14,18,27,0.14)] dark:active:shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_0_0_1px_rgba(255,255,255,0.12),0_1px_1px_rgba(0,0,0,0.30)]";
-
-// Outlined (basic) buttons: same pill elevation as solids but without the
-// inner highlight.
-const OUTLINE_SHADOW =
-  "shadow-[0_0_0_1px_rgba(14,18,27,0.12),0_1px_2px_rgba(14,18,27,0.12),0_2px_4px_-1px_rgba(14,18,27,0.08)] dark:shadow-[0_0_0_1px_rgba(255,255,255,0.10),0_1px_2px_rgba(0,0,0,0.30),0_2px_4px_-1px_rgba(0,0,0,0.20)]";
-
-const OUTLINE_SHADOW_HOVER =
-  "hover:shadow-[0_0_0_1px_rgba(14,18,27,0.14),0_2px_4px_rgba(14,18,27,0.14),0_4px_8px_-2px_rgba(14,18,27,0.10)] dark:hover:shadow-[0_0_0_1px_rgba(255,255,255,0.14),0_2px_4px_rgba(0,0,0,0.35),0_4px_8px_-2px_rgba(0,0,0,0.25)]";
-
-const OUTLINE_SHADOW_ACTIVE =
-  "active:shadow-[0_0_0_1px_rgba(14,18,27,0.14),0_1px_1px_rgba(14,18,27,0.14)] dark:active:shadow-[0_0_0_1px_rgba(255,255,255,0.12),0_1px_1px_rgba(0,0,0,0.30)]";
+const TINT_DESTRUCTIVE = [
+  "bg-[color-mix(in_srgb,var(--status-error)_10%,var(--background))]",
+  "text-[var(--status-error)]",
+  "border border-[color-mix(in_srgb,var(--status-error)_12%,transparent)]",
+  "hover:bg-[color-mix(in_srgb,var(--status-error)_16%,var(--background))]",
+  "active:bg-[color-mix(in_srgb,var(--status-error)_22%,var(--background))]",
+  "dark:bg-[color-mix(in_srgb,var(--status-error)_16%,transparent)]",
+  "dark:border-[color-mix(in_srgb,var(--status-error)_20%,transparent)]",
+  "dark:hover:bg-[color-mix(in_srgb,var(--status-error)_22%,transparent)]",
+  "dark:active:bg-[color-mix(in_srgb,var(--status-error)_30%,transparent)]",
+].join(" ");
 
 const fancyButtonRoot = cva(
   [
-    "group relative inline-flex items-center justify-center whitespace-nowrap typography-ui-label outline-none",
-    "transition-[background-color,border-color,color,box-shadow,opacity] duration-150 ease-out",
+    "group relative inline-flex items-center justify-center whitespace-nowrap [corner-shape:squircle] supports-[corner-shape:squircle]:rounded-[50px] typography-ui-label outline-none",
+    "transition-[background-color,border-color,color,opacity] duration-150 ease-out",
     "focus:outline-none",
     "disabled:pointer-events-none disabled:text-muted-foreground/60",
-    "disabled:bg-interactive-hover disabled:shadow-none",
+    "disabled:bg-interactive-hover",
   ],
   {
     variants: {
       variant: {
-        neutral: [
-          "bg-foreground text-background",
-          SOLID_SHADOW,
-          SOLID_SHADOW_HOVER,
-          SOLID_SHADOW_ACTIVE,
-        ],
-        primary: [
-          "bg-[var(--primary-base)] text-white",
-          SOLID_SHADOW,
-          SOLID_SHADOW_HOVER,
-          SOLID_SHADOW_ACTIVE,
-        ],
-        destructive: [
-          "bg-[var(--status-error)] text-white",
-          SOLID_SHADOW,
-          SOLID_SHADOW_HOVER,
-          SOLID_SHADOW_ACTIVE,
-        ],
-        basic: [
-          "bg-background text-foreground",
-          "hover:bg-interactive-hover hover:text-foreground",
-          OUTLINE_SHADOW,
-          OUTLINE_SHADOW_HOVER,
-          OUTLINE_SHADOW_ACTIVE,
-        ],
+        neutral:
+          "bg-interactive-hover text-foreground border border-border/60 hover:bg-interactive-active",
+        primary: TINT_PRIMARY,
+        destructive: TINT_DESTRUCTIVE,
+        basic:
+          "bg-background text-foreground border border-border/60 hover:bg-interactive-hover hover:text-foreground",
       },
       size: {
         medium: "h-10 gap-3 rounded-[var(--radius-xl)] px-3.5",
