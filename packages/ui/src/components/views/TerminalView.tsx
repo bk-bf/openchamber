@@ -909,12 +909,8 @@ export const TerminalView: React.FC = () => {
                 type="button"
                 size="sm"
                 variant="chip"
-                className={cn(
-                    "h-6 w-9 p-0",
-                    activeModifier === 'ctrl'
-                        ? 'border-[var(--primary-base)] text-[var(--primary-base)] bg-[var(--primary-base)]/10 hover:text-[var(--primary-base)]'
-                        : undefined
-                )}
+                aria-pressed={activeModifier === 'ctrl'}
+                className="h-6 w-9 p-0"
                 onClick={() => handleModifierToggle('ctrl')}
                 disabled={quickKeysDisabled}
             >
@@ -925,12 +921,8 @@ export const TerminalView: React.FC = () => {
                 type="button"
                 size="sm"
                 variant="chip"
-                className={cn(
-                    "h-6 w-9 p-0",
-                    activeModifier === 'cmd'
-                        ? 'border-[var(--primary-base)] text-[var(--primary-base)] bg-[var(--primary-base)]/10 hover:text-[var(--primary-base)]'
-                        : undefined
-                )}
+                aria-pressed={activeModifier === 'cmd'}
+                className="h-6 w-9 p-0"
                 onClick={() => handleModifierToggle('cmd')}
                 disabled={quickKeysDisabled}
             >

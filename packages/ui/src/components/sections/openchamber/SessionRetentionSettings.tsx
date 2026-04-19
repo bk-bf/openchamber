@@ -126,12 +126,8 @@ export const SessionRetentionSettings: React.FC = () => {
                 type="button"
                 variant="chip"
                 size="xs"
-                className={cn(
-                  '!font-normal',
-                  sessionRetentionAction === option.value
-                    ? 'border-[var(--primary-base)] text-[var(--primary-base)] bg-[var(--primary-base)]/10 hover:text-[var(--primary-base)]'
-                    : 'text-foreground'
-                )}
+                aria-pressed={sessionRetentionAction === option.value}
+                className="!font-normal"
                 onClick={() => setSessionRetentionAction(option.value)}
               >
                 {option.label}

@@ -686,39 +686,27 @@ export const AgentsPage: React.FC = () => {
                 <Button
                   variant="chip"
                   size="xs"
+                  aria-pressed={mode === 'primary'}
                   onClick={() => setMode('primary')}
-                  className={cn(
-                    '!font-normal',
-                    mode === 'primary'
-                      ? 'border-[var(--primary-base)] text-[var(--primary-base)] bg-[var(--primary-base)]/10 hover:text-[var(--primary-base)]'
-                      : 'text-foreground'
-                  )}
+                  className="!font-normal"
                 >
                   Primary
                 </Button>
                 <Button
                   variant="chip"
                   size="xs"
+                  aria-pressed={mode === 'subagent'}
                   onClick={() => setMode('subagent')}
-                  className={cn(
-                    '!font-normal',
-                    mode === 'subagent'
-                      ? 'border-[var(--primary-base)] text-[var(--primary-base)] bg-[var(--primary-base)]/10 hover:text-[var(--primary-base)]'
-                      : 'text-foreground'
-                  )}
+                  className="!font-normal"
                 >
                   Subagent
                 </Button>
                 <Button
                   variant="chip"
                   size="xs"
+                  aria-pressed={mode === 'all'}
                   onClick={() => setMode('all')}
-                  className={cn(
-                    '!font-normal',
-                    mode === 'all'
-                      ? 'border-[var(--primary-base)] text-[var(--primary-base)] bg-[var(--primary-base)]/10 hover:text-[var(--primary-base)]'
-                      : 'text-foreground'
-                  )}
+                  className="!font-normal"
                 >
                   All
                 </Button>

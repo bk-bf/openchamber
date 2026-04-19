@@ -619,26 +619,18 @@ export const McpPage: React.FC = () => {
                   <Button
                     variant="chip"
                     size="xs"
+                    aria-pressed={mcpType === 'local'}
                     onClick={() => setMcpType('local')}
-                    className={cn(
-                      '!font-normal',
-                      mcpType === 'local'
-                        ? 'border-[var(--primary-base)] text-[var(--primary-base)] bg-[var(--primary-base)]/10 hover:text-[var(--primary-base)]'
-                        : 'text-foreground'
-                    )}
+                    className="!font-normal"
                   >
                     Local · stdio
                   </Button>
                   <Button
                     variant="chip"
                     size="xs"
+                    aria-pressed={mcpType === 'remote'}
                     onClick={() => setMcpType('remote')}
-                    className={cn(
-                      '!font-normal',
-                      mcpType === 'remote'
-                        ? 'border-[var(--primary-base)] text-[var(--primary-base)] bg-[var(--primary-base)]/10 hover:text-[var(--primary-base)]'
-                        : 'text-foreground'
-                    )}
+                    className="!font-normal"
                   >
                     Remote · SSE
                   </Button>
