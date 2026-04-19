@@ -15,6 +15,7 @@ const localOrigin = readArgValue('--openchamber-local-origin');
 const homeDirectory = readArgValue('--openchamber-home');
 const macosMajorRaw = readArgValue('--openchamber-macos-major');
 const macosMajor = Number.parseInt(macosMajorRaw, 10);
+const bootOutcomeRaw = readArgValue('--openchamber-boot-outcome');
 
 if (localOrigin) {
   contextBridge.exposeInMainWorld('__OPENCHAMBER_LOCAL_ORIGIN__', localOrigin);
@@ -26,6 +27,16 @@ if (homeDirectory) {
 
 if (Number.isFinite(macosMajor) && macosMajor > 0) {
   contextBridge.exposeInMainWorld('__OPENCHAMBER_MACOS_MAJOR__', macosMajor);
+}
+
+if (bootOutcomeRaw) {
+  try {
+    const bootOutcome = JSON.parse(bootOutcomeRaw);
+    if (bootOutcome && typeof bootOutcome === 'object') {
+      contextBridge.exposeInMainWorld('__OPENCHAMBER_DESKTOP_BOOT_OUTCOME__', bootOutcome);
+    }
+  } catch {
+  }
 }
 
 const addListener = (event, handler) => {

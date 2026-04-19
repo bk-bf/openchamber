@@ -87,7 +87,7 @@ async function main() {
       OPENCHAMBER_DISABLE_PWA_DEV: '1',
     },
   });
-  const electron = spawnProcess('npx', ['electron', '.'], { cwd: electronDir });
+  const electron = spawnProcess('npx', ['electron', './main.mjs'], { cwd: electronDir });
 
   let cleaning = false;
   const teardown = async (code) => {

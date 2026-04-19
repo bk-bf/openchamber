@@ -13,6 +13,28 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const isDev = process.env.OPENCHAMBER_ELECTRON_DEV === '1' || !app.isPackaged;
 
+const readAppMetadata = () => {
+  const candidates = [
+    path.join(__dirname, 'package.json'),
+    path.join(__dirname, '..', 'package.json'),
+    path.join(app.getAppPath?.() || '', 'package.json'),
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    try {
+      const raw = fs.readFileSync(candidate, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (parsed?.name === '@openchamber/electron' && typeof parsed.version === 'string') {
+        return { name: parsed.name, version: parsed.version };
+      }
+    } catch {
+    }
+  }
+  return { name: '@openchamber/electron', version: app.getVersion() };
+};
+
+const APP_METADATA = readAppMetadata();
+const APP_VERSION = APP_METADATA.version;
+
 const SIDECAR_NOTIFY_PREFIX = '[OpenChamberDesktopNotify] ';
 const DEFAULT_DESKTOP_PORT = 57123;
 const MIN_WINDOW_WIDTH = 800;
@@ -20,6 +42,7 @@ const MIN_WINDOW_HEIGHT = 520;
 const MIN_RESTORE_WINDOW_WIDTH = 900;
 const MIN_RESTORE_WINDOW_HEIGHT = 560;
 const LOCAL_HOST_ID = 'local';
+const ENV_OVERRIDE_HOST_ID = '__env';
 const CHANGELOG_URL = 'https://raw.githubusercontent.com/btriapitsyn/openchamber/main/CHANGELOG.md';
 const UPDATE_METADATA_URL = 'https://github.com/btriapitsyn/openchamber/releases/latest/download/latest.json';
 const GITHUB_BUG_REPORT_URL = 'https://github.com/btriapitsyn/openchamber/issues/new?template=bug_report.yml';
@@ -34,6 +57,7 @@ const state = {
   sidecarChild: null,
   sidecarUrl: null,
   localOrigin: null,
+  bootOutcome: null,
   initScript: null,
   mainWindow: null,
   quitRequested: false,
@@ -55,7 +79,7 @@ const settingsFilePath = () => {
 
 const sshManager = new ElectronSshManager({
   settingsFilePath: settingsFilePath(),
-  appVersion: app.getVersion(),
+  appVersion: APP_VERSION,
   emit: (event, detail) => emitToAllWindows(event, detail),
 });
 
@@ -376,15 +400,42 @@ const macosMajorVersion = () => {
   return major === 10 ? minor : major;
 };
 
-const buildInitScript = (localOrigin) => {
+const buildInitScript = (localOrigin, bootOutcome) => {
   const home = JSON.stringify(os.homedir() || '');
   const local = JSON.stringify(localOrigin || '');
   const macVersion = macosMajorVersion();
+  const outcome = JSON.stringify(bootOutcome ?? null);
   return [
     '(function(){',
-    `try{window.__OPENCHAMBER_HOME__=${home};window.__OPENCHAMBER_MACOS_MAJOR__=${macVersion};window.__OPENCHAMBER_LOCAL_ORIGIN__=${local};}catch(_e){}`,
+    `try{window.__OPENCHAMBER_HOME__=${home};window.__OPENCHAMBER_MACOS_MAJOR__=${macVersion};window.__OPENCHAMBER_LOCAL_ORIGIN__=${local};var __oc_bo=${outcome};if(__oc_bo){window.__OPENCHAMBER_DESKTOP_BOOT_OUTCOME__=__oc_bo;}}catch(_e){}`,
     '}())',
   ].join('');
+};
+
+const computeBootOutcome = ({ envTargetUrl, probe, config, localAvailable }) => {
+  if (envTargetUrl) {
+    const status = probe && probe.status === 'unreachable' ? 'unreachable' : 'ok';
+    return { target: 'remote', status, hostId: ENV_OVERRIDE_HOST_ID, url: envTargetUrl };
+  }
+
+  const defaultId = config.defaultHostId || '';
+  if (!defaultId) {
+    return { target: null, status: 'not-configured' };
+  }
+
+  if (defaultId === LOCAL_HOST_ID) {
+    return localAvailable
+      ? { target: 'local', status: 'ok' }
+      : { target: 'local', status: 'unreachable' };
+  }
+
+  const host = config.hosts.find((entry) => entry.id === defaultId);
+  if (!host) {
+    return { target: 'remote', status: 'missing', hostId: defaultId };
+  }
+
+  const status = probe && probe.status === 'unreachable' ? 'unreachable' : 'ok';
+  return { target: 'remote', status, hostId: host.id, url: host.url };
 };
 
 const buildStartupSplashHtml = () => {
@@ -531,8 +582,9 @@ const createBrowserWindow = ({ label, restoreGeometry, url }) => {
         `--openchamber-local-origin=${desktopLocalOrigin}`,
         `--openchamber-home=${desktopHome}`,
         `--openchamber-macos-major=${desktopMacosMajor}`,
+        `--openchamber-boot-outcome=${JSON.stringify(state.bootOutcome || null)}`,
       ],
-      preload: path.join(__dirname, 'preload.mjs'),
+      preload: isDev ? path.join(__dirname, 'preload.mjs') : path.join(app.getAppPath(), 'preload.mjs'),
       backgroundThrottling: true,
       contextIsolation: true,
       nodeIntegration: false,
@@ -617,9 +669,10 @@ const createBrowserWindow = ({ label, restoreGeometry, url }) => {
   return browserWindow;
 };
 
-const activateMainWindow = async (url, localOrigin) => {
+const activateMainWindow = async (url, localOrigin, bootOutcome) => {
   state.localOrigin = localOrigin;
-  state.initScript = buildInitScript(localOrigin);
+  state.bootOutcome = bootOutcome ?? null;
+  state.initScript = buildInitScript(localOrigin, state.bootOutcome);
 
   const mainWindow = state.mainWindow;
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -659,36 +712,42 @@ const resolveInitialUrl = async () => {
     : localUrl;
 
   state.sidecarUrl = localUrl;
+  const localAvailable = Boolean(localUrl);
 
   const localOrigin = new URL(localUiUrl).origin;
   let initialUrl = localUiUrl;
+  let remoteProbe = null;
 
   const envTarget = normalizeHostUrl(process.env.OPENCHAMBER_SERVER_URL || '');
+  const config = readDesktopHostsConfig();
   if (envTarget) {
     initialUrl = envTarget;
-  } else {
-    const config = readDesktopHostsConfig();
-    if (config.defaultHostId && config.defaultHostId !== LOCAL_HOST_ID) {
-      const host = config.hosts.find((entry) => entry.id === config.defaultHostId);
-      if (host?.url) {
-        initialUrl = host.url;
-      }
+  } else if (config.defaultHostId && config.defaultHostId !== LOCAL_HOST_ID) {
+    const host = config.hosts.find((entry) => entry.id === config.defaultHostId);
+    if (host?.url) {
+      initialUrl = host.url;
     }
   }
 
   if (initialUrl !== localUiUrl) {
-    const softProbe = await probeHostWithTimeout(initialUrl, 2_000);
-    const reachable = softProbe.status !== 'unreachable'
-      ? true
-      : (await probeHostWithTimeout(initialUrl, 10_000)).status !== 'unreachable';
-
-    if (!reachable) {
+    remoteProbe = await probeHostWithTimeout(initialUrl, 2_000);
+    if (remoteProbe.status === 'unreachable') {
+      remoteProbe = await probeHostWithTimeout(initialUrl, 10_000);
+    }
+    if (remoteProbe.status === 'unreachable') {
       state.unreachableHosts.add(initialUrl);
       initialUrl = localUiUrl;
     }
   }
 
-  return { initialUrl, localOrigin, localUiUrl };
+  const bootOutcome = computeBootOutcome({
+    envTargetUrl: envTarget || null,
+    probe: remoteProbe,
+    config,
+    localAvailable,
+  });
+
+  return { initialUrl, localOrigin, localUiUrl, bootOutcome };
 };
 
 const compareSemver = (left, right) => {
@@ -872,7 +931,7 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
       return null;
 
     case 'desktop_get_app_version':
-      return app.getVersion();
+      return APP_VERSION;
 
     case 'desktop_save_markdown_file': {
       const defaultPath = typeof args.defaultFileName === 'string' ? args.defaultFileName.trim() : '';
@@ -1055,7 +1114,7 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
     }
 
     case 'desktop_check_for_updates': {
-      const currentVersion = app.getVersion();
+      const currentVersion = APP_VERSION;
       let payload = null;
       try {
         const response = await fetch(UPDATE_METADATA_URL, { signal: AbortSignal.timeout(10_000) });
@@ -1366,8 +1425,8 @@ app.whenReady().then(async () => {
     Menu.setApplicationMenu(buildMacMenu());
   }
 
-  const { initialUrl, localOrigin } = await resolveInitialUrl();
-  await activateMainWindow(initialUrl, localOrigin);
+  const { initialUrl, localOrigin, bootOutcome } = await resolveInitialUrl();
+  await activateMainWindow(initialUrl, localOrigin, bootOutcome);
 }).catch((error) => {
   console.error('[electron] startup failed:', error);
   app.exit(1);
