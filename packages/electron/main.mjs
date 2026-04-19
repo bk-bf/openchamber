@@ -22,6 +22,9 @@ if (!app.requestSingleInstanceLock()) {
   process.exit(0);
 }
 
+// Set the product name early so electron-log derives its log directory as
+// ~/Library/Logs/OpenChamber/ (not ~/Library/Logs/@openchamber/electron/).
+app.setName('OpenChamber');
 app.setAppUserModelId(APP_USER_MODEL_ID);
 app.commandLine.appendSwitch('proxy-bypass-list', '<-loopback>');
 
@@ -339,6 +342,7 @@ const readDesktopHostsConfig = () => {
     defaultHostId: typeof root.desktopDefaultHostId === 'string' && root.desktopDefaultHostId.trim()
       ? root.desktopDefaultHostId.trim()
       : null,
+    initialHostChoiceCompleted: root.desktopInitialHostChoiceCompleted === true,
   };
 };
 
@@ -361,6 +365,9 @@ const writeDesktopHostsConfig = async (config) => {
   root.desktopDefaultHostId = typeof config?.defaultHostId === 'string' && config.defaultHostId.trim()
     ? config.defaultHostId.trim()
     : null;
+  if (typeof config?.initialHostChoiceCompleted === 'boolean') {
+    root.desktopInitialHostChoiceCompleted = config.initialHostChoiceCompleted;
+  }
   await writeSettingsRoot(root);
 };
 
@@ -1582,9 +1589,20 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
     case 'desktop_hosts_get':
       return readDesktopHostsConfig();
 
-    case 'desktop_hosts_set':
-      await writeDesktopHostsConfig(args.config || {});
+    case 'desktop_hosts_set': {
+      await writeDesktopHostsConfig(args.input || args.config || {});
+      const updatedConfig = readDesktopHostsConfig();
+      const envTarget = normalizeHostUrl(process.env.OPENCHAMBER_SERVER_URL || '');
+      state.bootOutcome = computeBootOutcome({
+        envTargetUrl: envTarget || null,
+        probe: null,
+        config: updatedConfig,
+        localAvailable: Boolean(state.sidecarUrl || state.localOrigin),
+      });
+      state.initScript = buildInitScript(state.localOrigin, state.bootOutcome);
+      log.info('[electron] hosts config updated, recomputed bootOutcome', state.bootOutcome);
       return null;
+    }
 
     case 'desktop_host_probe':
       return probeHostWithTimeout(String(args.url || ''), 2_000);
@@ -1934,7 +1952,6 @@ app.whenReady().then(async () => {
     platform: process.platform,
     arch: process.arch,
   });
-  app.setName('OpenChamber');
   nativeTheme.themeSource = readThemeSource();
   setupAutoUpdater();
 
