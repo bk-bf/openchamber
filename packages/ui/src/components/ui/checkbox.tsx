@@ -43,7 +43,7 @@ export const Checkbox = React.memo<CheckboxProps>(function Checkbox({
         // Drive fill directly from React props so the initial paint matches
         // the final state without waiting for Base UI to hydrate data attrs.
         isOn
-          ? 'bg-[color-mix(in_srgb,var(--primary-base)_80%,transparent)] shadow-none hover:bg-[var(--primary-base)]'
+          ? 'bg-transparent shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--primary-base)_50%,transparent)] hover:bg-[var(--interactive-hover)]'
           : 'bg-[var(--surface-muted)] shadow-[inset_0_0_0_1px_var(--interactive-border)] hover:bg-[var(--interactive-hover)]',
         // focus
         'focus-visible:ring-2 focus-visible:ring-[var(--interactive-focus-ring)] focus-visible:ring-offset-1 focus-visible:ring-offset-background',
@@ -55,16 +55,16 @@ export const Checkbox = React.memo<CheckboxProps>(function Checkbox({
       <BaseCheckbox.Indicator
         keepMounted
         className={cn(
-          'flex items-center justify-center text-white',
+          'flex items-center justify-center text-[var(--primary-base)]',
           // hide when fully unchecked (no state)
           'data-[unchecked]:hidden',
           iconClassName,
         )}
       >
         {indeterminate ? (
-          <RiSubtractLine className={cn(iconSize, 'text-white')} />
+          <RiSubtractLine className={cn(iconSize, 'text-[var(--primary-base)]')} />
         ) : (
-          <RiCheckLine className={cn(iconSize, 'text-white')} />
+          <RiCheckLine className={cn(iconSize, 'text-[var(--primary-base)]')} />
         )}
       </BaseCheckbox.Indicator>
     </BaseCheckbox.Root>
