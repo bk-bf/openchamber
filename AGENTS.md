@@ -6,9 +6,17 @@ OpenChamber provides UI runtimes (web/desktop/VS Code) for interacting with an O
 
 ## Runtime architecture (IMPORTANT)
 
-- `Desktop` is a thin Tauri shell that starts the web server sidecar and loads the web UI from `http://127.0.0.1:<port>`.
-- All backend logic lives in `packages/web/server/*` (and `packages/vscode/*` for the VS Code runtime). Desktop Rust is not a feature backend.
-- Tauri is used only for stable native integrations: menu, dialog (open folder), notifications, updater, deep-links.
+- `Desktop` is a thin native shell that starts the web server sidecar and loads the web UI from `http://127.0.0.1:<port>`.
+- All backend logic lives in `packages/web/server/*` (and `packages/vscode/*` for the VS Code runtime). The native shell is not a feature backend.
+- The shell is used only for stable native integrations: menu, dialog (open folder), notifications, updater, deep-links, quit confirmation.
+
+### Desktop shell: Electron is the target, Tauri is legacy
+
+- **New desktop work goes into `packages/electron/`.** This is the forward path.
+- `packages/desktop/` (Tauri) is kept running in parallel only to preserve auto-update for existing installs until the cutover. Do **not** add features to it; do **not** port bug fixes back unless they actually affect currently-released Tauri users.
+- Desktop-side changes (IPC handlers, native integrations, window/quit/notification behavior) land in `packages/electron/main.mjs` + `packages/electron/preload.mjs`. The `__TAURI__` shim exposed by the preload keeps the shared UI working against both shells, so renderer-side code should not branch on shell type.
+- Build/release: both shells ship in the same GitHub release today (`.github/workflows/release.yml`). The one-shot Tauri → Electron auto-update migration is documented in `docs/TAURI_TO_ELECTRON_CUTOVER.md`; run that when the user decides to flip.
+- After the cutover ships and stabilises, `packages/desktop/` is deleted; this note collapses back to "Desktop is Electron".
 
 ## Tech stack (source of truth: `package.json`, resolved: `bun.lock`)
 
@@ -17,7 +25,8 @@ OpenChamber provides UI runtimes (web/desktop/VS Code) for interacting with an O
 - State: Zustand (`packages/ui/src/stores/`)
 - UI primitives: Base UI (`@base-ui/react`, primary source for dropdown/select/dialog/menu/tooltip/etc. — wrappers live in `packages/ui/src/components/ui/`), Radix UI (`package.json` deps, legacy usages being migrated), HeroUI (`package.json` deps), Remixicon (`package.json` deps)
 - Server: Express (`packages/web/server/index.js`)
-- Desktop: Tauri v2 (`packages/desktop/src-tauri/`)
+- Desktop (forward): Electron 41 (`packages/electron/`)
+- Desktop (legacy, maintenance-only): Tauri v2 (`packages/desktop/src-tauri/`)
 - VS Code: extension + webview (`packages/vscode/`)
 
 ## Monorepo layout
@@ -26,7 +35,8 @@ Workspaces are `packages/*` (see `package.json`).
 
 - Shared UI: `packages/ui`
 - Web app + server + CLI: `packages/web`
-- Desktop app (Tauri): `packages/desktop`
+- Desktop shell (Electron — forward): `packages/electron`
+- Desktop shell (Tauri — legacy, maintenance-only): `packages/desktop`
 - VS Code extension: `packages/vscode`
 
 ## Documentation map
@@ -95,7 +105,9 @@ All scripts are in `package.json`.
 
 - Validate: `bun run type-check`, `bun run lint`
 - Build all: `bun run build`
-- Desktop build: `bun run desktop:build`
+- Desktop build (Electron — primary): `bun run electron:build`
+- Desktop dev (Electron): `bun run electron:dev`
+- Desktop build (Tauri — legacy): `bun run desktop:build`
 - VS Code build: `bun run vscode:build`
 - Release smoke build: `bun run release:test` (shell script: `scripts/test-release-build.sh`)
 
@@ -104,8 +116,8 @@ All scripts are in `package.json`.
 - Web bootstrap: `packages/web/src/main.tsx`
 - Web server: `packages/web/server/index.js`
 - Web CLI: `packages/web/bin/cli.js` (package bin: `packages/web/package.json`)
-- Desktop: Tauri entry `packages/desktop/src-tauri/src/main.rs` (spawns web server sidecar + loads web UI)
-- Tauri backend: `packages/desktop/src-tauri/src/main.rs`
+- Desktop (Electron — primary): `packages/electron/main.mjs` (spawns web server sidecar + loads web UI; preload at `packages/electron/preload.mjs` exposes the `__TAURI__` IPC shim so shared UI code is shell-agnostic)
+- Desktop (Tauri — legacy): `packages/desktop/src-tauri/src/main.rs`
 - VS Code extension host: `packages/vscode/src/extension.ts`
 - VS Code webview bootstrap: `packages/vscode/webview/main.tsx`
 

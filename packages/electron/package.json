@@ -65,7 +65,17 @@
       ]
     },
     "dmg": {
-      "sign": true
+      "sign": true,
+      "title": "${productName} ${version}",
+      "iconSize": 128,
+      "window": {
+        "width": 660,
+        "height": 400
+      },
+      "contents": [
+        { "x": 180, "y": 200, "type": "file" },
+        { "x": 480, "y": 200, "type": "link", "path": "/Applications" }
+      ]
     },
     "publish": {
       "provider": "github",
