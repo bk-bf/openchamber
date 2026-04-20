@@ -1106,6 +1106,50 @@ const createBrowserWindow = ({ label, restoreGeometry, url }) => {
     }
   });
 
+  // Any navigation target that isn't our own UI (local server / configured
+  // desktop hosts) should open in the user's default browser, not spawn
+  // another Electron window loading arbitrary web content.
+  const isAllowedNavigationUrl = (raw) => {
+    try {
+      const url = new URL(raw);
+      if (url.protocol === 'file:' || url.protocol === 'about:' || url.protocol === 'devtools:') return true;
+      if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
+      const hostname = url.hostname;
+      if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') return true;
+      if (state.localOrigin) {
+        try {
+          if (new URL(state.localOrigin).origin === url.origin) return true;
+        } catch {
+        }
+      }
+      const hosts = readDesktopHostsConfig()?.hosts || [];
+      for (const entry of hosts) {
+        if (typeof entry?.url !== 'string') continue;
+        try {
+          if (new URL(entry.url).origin === url.origin) return true;
+        } catch {
+        }
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  };
+
+  browserWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (isAllowedNavigationUrl(url)) {
+      return { action: 'allow' };
+    }
+    void shell.openExternal(url).catch(() => {});
+    return { action: 'deny' };
+  });
+
+  browserWindow.webContents.on('will-navigate', (event, url) => {
+    if (isAllowedNavigationUrl(url)) return;
+    event.preventDefault();
+    void shell.openExternal(url).catch(() => {});
+  });
+
   browserWindow.webContents.setZoomFactor(1);
   browserWindow.webContents.on('zoom-changed', () => {
     browserWindow.webContents.setZoomFactor(1);
