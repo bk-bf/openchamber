@@ -23,7 +23,9 @@ async function loadDictionary(locale: Locale): Promise<I18nDictionary> {
 
   const mod = locale === 'zh-CN'
     ? await import('./messages/zh-CN') as { dict: I18nDictionary }
-    : { dict: enDict };
+    : locale === 'uk'
+      ? await import('./messages/uk') as { dict: I18nDictionary }
+      : { dict: enDict };
   dictionaries.set(locale, mod.dict);
   return mod.dict;
 }

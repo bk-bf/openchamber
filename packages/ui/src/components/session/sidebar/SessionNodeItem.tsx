@@ -35,7 +35,7 @@ import {
 import { cn } from '@/lib/utils';
 import { isVSCodeRuntime } from '@/lib/desktop';
 import { toast } from '@/components/ui';
-import { buildExportFilename, downloadAsMarkdown, formatSessionAsMarkdown, getExportRevealLabel, revealExportedMarkdown, saveAsMarkdownDesktop } from '@/lib/exportSession';
+import { buildExportFilename, downloadAsMarkdown, formatSessionAsMarkdown, getExportRevealLabelKey, revealExportedMarkdown, saveAsMarkdownDesktop } from '@/lib/exportSession';
 import { buildSessionMessageRecordsSnapshot, useDirectoryStore, useGlobalSessionStatus, useSession, useSessionPermissions } from '@/sync/sync-context';
 import { useSync } from '@/sync/use-sync';
 import { useViewportStore } from '@/sync/viewport-store';
@@ -333,7 +333,7 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
     if (savedPath) {
       toast.success(t('sessions.sidebar.session.export.success'), {
         action: {
-          label: getExportRevealLabel(),
+          label: t(getExportRevealLabelKey()),
           onClick: () => {
             void revealExportedMarkdown(savedPath).then((revealed) => {
               if (!revealed) {
