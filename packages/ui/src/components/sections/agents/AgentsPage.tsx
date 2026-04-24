@@ -327,6 +327,15 @@ export const AgentsPage: React.FC = () => {
       hasDefaultHint,
     };
   }, [getPatternRules, getWildcardOverride, globalPermission]);
+  const permissionActionLabel = React.useCallback((value: PermissionAction): string => {
+    if (value === 'allow') return t('settings.common.permission.allow');
+    if (value === 'deny') return t('settings.common.permission.deny');
+    return t('settings.common.permission.ask');
+  }, [t]);
+  const permissionScopeLabel = React.useCallback((value: PermissionAction | 'global'): string => {
+    if (value === 'global') return t('settings.common.scope.global');
+    return permissionActionLabel(value);
+  }, [permissionActionLabel, t]);
 
   const availablePermissionNames = React.useMemo(() => {
     const names = new Set<string>();
@@ -912,7 +921,7 @@ export const AgentsPage: React.FC = () => {
                   onValueChange={(value) => setGlobalPermissionAndPrune(value as PermissionAction)}
                 >
                   <SelectTrigger className="w-[100px]">
-                    <SelectValue />
+                    <SelectValue>{permissionActionLabel(globalPermission)}</SelectValue>
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="allow">{t('settings.common.permission.allow')}</SelectItem>
@@ -969,13 +978,13 @@ export const AgentsPage: React.FC = () => {
                             }}
                           >
                             <SelectTrigger className="w-[90px]">
-                               <SelectValue />
+                               <SelectValue>{permissionScopeLabel(wildcardValue as PermissionAction | 'global')}</SelectValue>
                              </SelectTrigger>
                              <SelectContent>
                                <SelectItem value="global">{t('settings.common.scope.global')}</SelectItem>
                               {wildcardOptions.map((action) => (
                                 <SelectItem key={action} value={action} className="capitalize">
-                                  {action}
+                                  {permissionActionLabel(action)}
                                 </SelectItem>
                               ))}
                             </SelectContent>
@@ -1010,7 +1019,7 @@ export const AgentsPage: React.FC = () => {
                                 onValueChange={(value) => setRuleAction(rule.permission, rule.pattern, value as PermissionAction)}
                               >
                                  <SelectTrigger className="w-[90px]">
-                                   <SelectValue />
+                                   <SelectValue>{permissionActionLabel(rule.action)}</SelectValue>
                                  </SelectTrigger>
                                  <SelectContent>
                                    <SelectItem value="allow">{t('settings.common.permission.allow')}</SelectItem>
