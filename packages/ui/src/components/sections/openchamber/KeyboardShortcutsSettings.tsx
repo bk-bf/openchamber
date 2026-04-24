@@ -47,12 +47,18 @@ const keyboardEventToCombo = (event: React.KeyboardEvent<HTMLInputElement>): Sho
 
 export const KeyboardShortcutsSettings: React.FC = () => {
   const { t } = useI18n();
+  const tUnsafe = React.useCallback((key: string) => t(key as Parameters<typeof t>[0]), [t]);
   const shortcutOverrides = useUIStore((state) => state.shortcutOverrides);
   const setShortcutOverride = useUIStore((state) => state.setShortcutOverride);
   const clearShortcutOverride = useUIStore((state) => state.clearShortcutOverride);
   const resetAllShortcutOverrides = useUIStore((state) => state.resetAllShortcutOverrides);
 
   const actions = React.useMemo(() => getCustomizableShortcutActions(), []);
+  const actionLabel = React.useCallback((id: string, fallbackLabel: string): string => {
+    const key = `settings.openchamber.keyboardShortcuts.action.${id}.label`;
+    const translated = tUnsafe(key);
+    return translated === key ? fallbackLabel : translated;
+  }, [tUnsafe]);
 
   const [capturingActionId, setCapturingActionId] = React.useState<string | null>(null);
   const [draftByAction, setDraftByAction] = React.useState<Record<string, ShortcutCombo>>({});
@@ -194,7 +200,7 @@ export const KeyboardShortcutsSettings: React.FC = () => {
           return (
             <div key={action.id} className={cn("flex flex-col gap-2 py-1.5 sm:flex-row sm:items-center sm:gap-8", index > 0 && "border-t border-[var(--surface-subtle)]")}>
               <div className="flex min-w-0 flex-col sm:w-56 shrink-0">
-                <span className="typography-ui-label text-foreground">{action.label}</span>
+                <span className="typography-ui-label text-foreground">{actionLabel(action.id, action.label)}</span>
               </div>
               <div className="flex min-w-0 flex-1 items-center gap-2 sm:w-fit sm:flex-initial">
                 <Input
