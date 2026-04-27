@@ -1,5 +1,5 @@
 import React from 'react';
-import { RiAddLine, RiArrowDownLine, RiArrowGoBackLine, RiArrowLeftLine, RiArrowRightLine, RiArrowUpLine, RiCloseLine, RiCommandLine } from '@remixicon/react';
+import { RiAddLine, RiArrowDownLine, RiArrowGoBackLine, RiArrowLeftLine, RiArrowRightLine, RiArrowUpLine, RiCloseLine, RiCommandLine, RiGlobalLine } from '@remixicon/react';
 
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useTerminalStore } from '@/stores/useTerminalStore';
@@ -110,6 +110,9 @@ export const TerminalView: React.FC = () => {
     const setTabLifecycle = useTerminalStore((s) => s.setTabLifecycle);
     const setConnecting = useTerminalStore((s) => s.setConnecting);
     const appendToBuffer = useTerminalStore((s) => s.appendToBuffer);
+    const markPreviewAutoOpened = useTerminalStore((s) => s.markPreviewAutoOpened);
+
+    const openContextPreview = useUIStore((state) => state.openContextPreview);
 
     const directoryTerminalState = React.useMemo(() => {
         if (!effectiveDirectory) return undefined;
@@ -137,6 +140,8 @@ export const TerminalView: React.FC = () => {
     const terminalLifecycle = activeTab?.lifecycle ?? 'idle';
     const bufferChunks = activeTab?.bufferChunks ?? [];
     const isConnecting = activeTab?.isConnecting ?? false;
+    const previewUrl = activeTab?.previewUrl ?? null;
+    const previewAutoOpened = activeTab?.previewAutoOpened ?? false;
 
     const [connectionError, setConnectionError] = React.useState<string | null>(null);
     const [isFatalError, setIsFatalError] = React.useState(false);
@@ -204,6 +209,20 @@ export const TerminalView: React.FC = () => {
             setHasOpenedTerminalViewport(true);
         }
     }, [isTerminalVisible]);
+
+    // Auto-open preview pane once when we detect a local dev server URL.
+    React.useEffect(() => {
+        if (!effectiveDirectory || !activeTabId || !previewUrl) {
+            return;
+        }
+
+        if (previewAutoOpened) {
+            return;
+        }
+
+        openContextPreview(effectiveDirectory, previewUrl);
+        markPreviewAutoOpened(effectiveDirectory, activeTabId);
+    }, [activeTabId, effectiveDirectory, markPreviewAutoOpened, openContextPreview, previewAutoOpened, previewUrl]);
 
     React.useEffect(() => {
         isTerminalVisibleRef.current = isTerminalVisible;
@@ -1074,11 +1093,25 @@ export const TerminalView: React.FC = () => {
                             </div>
                         </div>
 
-                        {!isMobile && showQuickKeys ? (
-                            <div className="flex shrink-0 items-center gap-1 overflow-x-auto pb-1">
-                                {quickKeysControls}
-                            </div>
-                        ) : null}
+                        <div className="flex shrink-0 items-center gap-1 overflow-x-auto pb-1">
+                            {previewUrl ? (
+                                <Button
+                                    type="button"
+                                    size="xs"
+                                    variant="outline"
+                                    className="h-6"
+                                    onClick={() => {
+                                        if (!effectiveDirectory) return;
+                                        openContextPreview(effectiveDirectory, previewUrl);
+                                    }}
+                                    title={t('terminalView.preview.openTitle')}
+                                >
+                                    <RiGlobalLine className="h-3.5 w-3.5" />
+                                    {t('terminalView.preview.open')}
+                                </Button>
+                            ) : null}
+                            {!isMobile && showQuickKeys ? quickKeysControls : null}
+                        </div>
                     </div>
                 ) : null}
 

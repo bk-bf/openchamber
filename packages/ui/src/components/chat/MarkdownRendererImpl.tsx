@@ -11,7 +11,7 @@ import remend from 'remend';
 import { FadeInOnReveal } from './message/FadeInOnReveal';
 import type { Part } from '@opencode-ai/sdk/v2';
 import { cn } from '@/lib/utils';
-import { RiFileCopyLine, RiCheckLine, RiDownloadLine } from '@remixicon/react';
+import { RiFileCopyLine, RiCheckLine, RiDownloadLine, RiEyeLine, RiCodeLine } from '@remixicon/react';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { toast } from '@/components/ui';
 import { copyTextToClipboard } from '@/lib/clipboard';
@@ -694,6 +694,26 @@ const CODE_SHARED_STYLE: React.CSSProperties = {
   lineHeight: 'var(--markdown-code-block-line-height)',
 };
 
+const downloadTextFile = (content: string, filename: string, mimeType: string) => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  try {
+    const blob = new Blob([content], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch {
+    // Best-effort; callers can optionally toast.
+  }
+};
+
 const MarkdownCodeBlock: React.FC<{
   code: string;
   language: string;
@@ -701,8 +721,17 @@ const MarkdownCodeBlock: React.FC<{
 }> = ({ code, language, syntaxTheme }) => {
   const [copied, setCopied] = React.useState(false);
   const [highlight, setHighlight] = React.useState(true);
+  const [viewMode, setViewMode] = React.useState<'code' | 'preview'>('code');
   const prevCodeRef = React.useRef<string>(code);
   const timerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const canPreview = language === 'html' || language === 'htm';
+
+  React.useEffect(() => {
+    if (!canPreview && viewMode !== 'code') {
+      setViewMode('code');
+    }
+  }, [canPreview, viewMode]);
 
   // Defer Prism highlighting while code is actively streaming.
   // Initial mount renders highlighted immediately (plays nice with finalized blocks).
@@ -732,38 +761,82 @@ const MarkdownCodeBlock: React.FC<{
     window.setTimeout(() => setCopied(false), 2000);
   }, [code]);
 
+  const handleDownload = React.useCallback(() => {
+    if (!canPreview) {
+      return;
+    }
+
+    const safeSuffix = Date.now().toString(36);
+    downloadTextFile(code, `preview-${safeSuffix}.html`, 'text/html;charset=utf-8');
+  }, [canPreview, code]);
+
   return (
     <div data-component="markdown-code" className="my-4 group overflow-hidden rounded-2xl border border-border/80 bg-[var(--surface-elevated)]">
       <div className="flex items-center justify-between border-b border-border/70 px-3 py-1.5">
         <span className="font-mono text-[13px] text-muted-foreground">{language}</span>
-        <div className="opacity-0 transition-opacity group-hover:opacity-100">
+        <div className="flex items-center gap-1 opacity-100 transition-opacity md:opacity-0 md:group-hover:opacity-100">
+          {canPreview ? (
+            <button
+              type="button"
+              onClick={() => setViewMode((mode) => (mode === 'preview' ? 'code' : 'preview'))}
+              className="p-1 rounded hover:bg-interactive-hover/60 text-muted-foreground hover:text-foreground transition-colors"
+              title={viewMode === 'preview' ? 'Show code' : 'Preview'}
+              aria-pressed={viewMode === 'preview'}
+              aria-label={viewMode === 'preview' ? 'Show code' : 'Preview HTML'}
+            >
+              {viewMode === 'preview' ? <RiCodeLine className="size-3.5" /> : <RiEyeLine className="size-3.5" />}
+            </button>
+          ) : null}
+          {canPreview ? (
+            <button
+              type="button"
+              onClick={handleDownload}
+              className="p-1 rounded hover:bg-interactive-hover/60 text-muted-foreground hover:text-foreground transition-colors"
+              title="Download HTML"
+              aria-label="Download HTML"
+            >
+              <RiDownloadLine className="size-3.5" />
+            </button>
+          ) : null}
           <button
             type="button"
             onClick={() => { void handleCopy(); }}
             className="p-1 rounded hover:bg-interactive-hover/60 text-muted-foreground hover:text-foreground transition-colors"
             title={copied ? 'Copied' : 'Copy code'}
+            aria-label={copied ? 'Copied' : 'Copy code'}
           >
             {copied ? <RiCheckLine className="size-3.5" /> : <RiFileCopyLine className="size-3.5" />}
           </button>
         </div>
       </div>
-      <div className="px-3 py-2.5">
-        {highlight ? (
-          <SyntaxHighlighter
-            language={language}
-            style={syntaxTheme}
-            customStyle={CODE_SHARED_STYLE}
-            codeTagProps={{ style: CODE_SHARED_STYLE }}
-            PreTag="pre"
-          >
-            {code}
-          </SyntaxHighlighter>
-        ) : (
-          <pre style={CODE_SHARED_STYLE}>
-            <code style={CODE_SHARED_STYLE}>{code}</code>
-          </pre>
-        )}
-      </div>
+      {canPreview && viewMode === 'preview' ? (
+        <div className="h-[320px] md:h-[420px] bg-background">
+          <iframe
+            srcDoc={code}
+            title="HTML preview"
+            className="h-full w-full border-0"
+            sandbox="allow-scripts allow-forms"
+          />
+        </div>
+      ) : (
+        <div className="px-3 py-2.5">
+          {highlight ? (
+            <SyntaxHighlighter
+              language={language}
+              style={syntaxTheme}
+              customStyle={CODE_SHARED_STYLE}
+              codeTagProps={{ style: CODE_SHARED_STYLE }}
+              PreTag="pre"
+            >
+              {code}
+            </SyntaxHighlighter>
+          ) : (
+            <pre style={CODE_SHARED_STYLE}>
+              <code style={CODE_SHARED_STYLE}>{code}</code>
+            </pre>
+          )}
+        </div>
+      )}
     </div>
   );
 };

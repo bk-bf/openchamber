@@ -1,11 +1,12 @@
 import React from 'react';
-import { RiArrowLeftRightLine, RiChat4Line, RiCloseLine, RiDonutChartFill, RiFileTextLine, RiFullscreenExitLine, RiFullscreenLine } from '@remixicon/react';
+import { RiArrowLeftRightLine, RiChat4Line, RiCloseLine, RiDonutChartFill, RiFileTextLine, RiFullscreenExitLine, RiFullscreenLine, RiGlobalLine, RiRefreshLine, RiExternalLinkLine } from '@remixicon/react';
 
 import { FileTypeIcon } from '@/components/icons/FileTypeIcon';
 import { Button } from '@/components/ui/button';
 import { SortableTabsStrip } from '@/components/ui/sortable-tabs-strip';
 import { DiffView, FilesView, PlanView } from '@/components/views';
 import { useThemeSystem } from '@/contexts/useThemeSystem';
+import { openExternalUrl } from '@/lib/url';
 import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/lib/i18n';
@@ -59,13 +60,14 @@ const getRelativePathLabel = (filePath: string | null, directory: string): strin
 };
 
 const getModeLabel = (
-  mode: 'diff' | 'file' | 'context' | 'plan' | 'chat',
+  mode: 'diff' | 'file' | 'context' | 'plan' | 'chat' | 'preview',
   t: TranslateFn
 ): string => {
   if (mode === 'chat') return t('contextPanel.mode.chat');
   if (mode === 'file') return t('contextPanel.mode.files');
   if (mode === 'diff') return t('contextPanel.mode.diff');
   if (mode === 'plan') return t('contextPanel.mode.plan');
+  if (mode === 'preview') return t('contextPanel.mode.preview');
   return t('contextPanel.mode.context');
 };
 
@@ -88,7 +90,7 @@ const getFileNameFromPath = (path: string | null): string | null => {
 };
 
 const getTabLabel = (
-  tab: { mode: 'diff' | 'file' | 'context' | 'plan' | 'chat'; label: string | null; targetPath: string | null },
+  tab: { mode: 'diff' | 'file' | 'context' | 'plan' | 'chat' | 'preview'; label: string | null; targetPath: string | null },
   t: TranslateFn
 ): string => {
   if (tab.label) {
@@ -99,10 +101,23 @@ const getTabLabel = (
     return getFileNameFromPath(tab.targetPath) || t('contextPanel.mode.files');
   }
 
+  if (tab.mode === 'preview') {
+    const url = tab.targetPath;
+    if (url) {
+      try {
+        const parsed = new URL(url);
+        return parsed.host || parsed.hostname || t('contextPanel.mode.preview');
+      } catch {
+        // ignore invalid URL
+      }
+    }
+    return t('contextPanel.mode.preview');
+  }
+
   return getModeLabel(tab.mode, t);
 };
 
-const getTabIcon = (tab: { mode: 'diff' | 'file' | 'context' | 'plan' | 'chat'; targetPath: string | null }): React.ReactNode | undefined => {
+const getTabIcon = (tab: { mode: 'diff' | 'file' | 'context' | 'plan' | 'chat' | 'preview'; targetPath: string | null }): React.ReactNode | undefined => {
   if (tab.mode === 'file') {
     return tab.targetPath
       ? <FileTypeIcon filePath={tab.targetPath} className="h-3.5 w-3.5" />
@@ -123,6 +138,10 @@ const getTabIcon = (tab: { mode: 'diff' | 'file' | 'context' | 'plan' | 'chat'; 
 
   if (tab.mode === 'chat') {
     return <RiChat4Line className="h-3.5 w-3.5" />;
+  }
+
+  if (tab.mode === 'preview') {
+    return <RiGlobalLine className="h-3.5 w-3.5" />;
   }
 
   return undefined;
@@ -161,6 +180,184 @@ const truncateTabLabel = (value: string, maxChars: number): string => {
   }
 
   return `${value.slice(0, maxChars - 3)}...`;
+};
+
+type PreviewPaneProps = {
+  rawUrl: string;
+};
+
+type PreviewProxyState =
+  | { status: 'idle' }
+  | { status: 'loading' }
+  | { status: 'ready'; proxyBasePath: string; expiresAt: number }
+  | { status: 'error'; message: string };
+
+const PreviewPane: React.FC<PreviewPaneProps> = ({ rawUrl }) => {
+  const { t } = useI18n();
+  const [reloadNonce, bumpReload] = React.useReducer((x: number) => x + 1, 0);
+  const [proxyState, setProxyState] = React.useState<PreviewProxyState>({ status: 'idle' });
+
+  let parsedUrl: URL | null = null;
+  try {
+    parsedUrl = rawUrl ? new URL(rawUrl) : null;
+  } catch {
+    parsedUrl = null;
+  }
+
+  const isLoopback = parsedUrl
+    ? (parsedUrl.hostname === 'localhost'
+        || parsedUrl.hostname === '127.0.0.1'
+        || parsedUrl.hostname === '::1'
+        || parsedUrl.hostname === '[::1]'
+        || parsedUrl.hostname === '0.0.0.0')
+    : false;
+
+  const normalizedUrl = parsedUrl
+    ? (parsedUrl.hostname === '0.0.0.0'
+        ? new URL(parsedUrl.toString().replace('0.0.0.0', '127.0.0.1'))
+        : parsedUrl)
+    : null;
+
+  const targetKey = normalizedUrl ? normalizedUrl.toString() : '';
+
+  React.useEffect(() => {
+    if (!targetKey || !isLoopback) {
+      setProxyState({ status: 'idle' });
+      return;
+    }
+
+    let cancelled = false;
+    setProxyState({ status: 'loading' });
+
+    void (async () => {
+      try {
+        const response = await fetch('/api/preview/targets', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ url: targetKey }),
+        });
+
+        if (!response.ok) {
+          const errorBody = await response.json().catch(() => ({}));
+          const message = typeof errorBody?.error === 'string'
+            ? errorBody.error
+            : `HTTP ${response.status}`;
+          if (!cancelled) {
+            setProxyState({ status: 'error', message });
+          }
+          return;
+        }
+
+        const body = await response.json() as { proxyBasePath?: unknown; expiresAt?: unknown };
+        const proxyBasePath = typeof body.proxyBasePath === 'string' ? body.proxyBasePath : '';
+        const expiresAt = typeof body.expiresAt === 'number' ? body.expiresAt : 0;
+        if (!proxyBasePath) {
+          if (!cancelled) {
+            setProxyState({ status: 'error', message: t('contextPanel.preview.proxyError') });
+          }
+          return;
+        }
+
+        if (!cancelled) {
+          setProxyState({ status: 'ready', proxyBasePath, expiresAt });
+        }
+      } catch (error) {
+        if (!cancelled) {
+          const message = error instanceof Error ? error.message : String(error);
+          setProxyState({ status: 'error', message });
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isLoopback, t, targetKey]);
+
+  const directSrc = normalizedUrl
+    && (normalizedUrl.protocol === 'http:' || normalizedUrl.protocol === 'https:')
+    ? normalizedUrl.toString()
+    : '';
+
+  const proxySrc = isLoopback && proxyState.status === 'ready' && normalizedUrl
+    ? (() => {
+      const path = normalizedUrl.pathname || '/';
+      const search = normalizedUrl.search || '';
+      const hash = normalizedUrl.hash || '';
+      return `${proxyState.proxyBasePath}${path}${search}${hash}`;
+    })()
+    : '';
+
+  const effectiveSrc = isLoopback ? proxySrc : directSrc;
+  const headerSrc = effectiveSrc || directSrc;
+  const showLoading = isLoopback && (proxyState.status === 'loading' || proxyState.status === 'idle');
+  const showError = isLoopback && proxyState.status === 'error';
+
+  return (
+    <div className="absolute inset-0 flex flex-col">
+      <div className="flex items-center gap-1 border-b border-border/40 bg-[var(--surface-background)] px-2 py-1">
+        <div className="min-w-0 flex-1 truncate typography-micro text-muted-foreground" title={headerSrc || rawUrl}>
+          {headerSrc || rawUrl || t('contextPanel.preview.empty')}
+        </div>
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          className="h-7 w-7 p-0"
+          onClick={() => bumpReload()}
+          title={t('contextPanel.preview.actions.reload')}
+          aria-label={t('contextPanel.preview.actions.reload')}
+          disabled={!effectiveSrc}
+        >
+          <RiRefreshLine className="h-3.5 w-3.5" />
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          className="h-7 w-7 p-0"
+          onClick={() => {
+            if (!directSrc) return;
+            void openExternalUrl(directSrc);
+          }}
+          title={t('contextPanel.preview.actions.openExternal')}
+          aria-label={t('contextPanel.preview.actions.openExternal')}
+          disabled={!directSrc}
+        >
+          <RiExternalLinkLine className="h-3.5 w-3.5" />
+        </Button>
+      </div>
+      <div className="min-h-0 flex-1 bg-background">
+        {effectiveSrc ? (
+          <iframe
+            key={`${effectiveSrc}:${reloadNonce}`}
+            src={effectiveSrc}
+            title={t('contextPanel.preview.iframeTitle')}
+            className="h-full w-full border-0"
+            sandbox={isLoopback
+              ? 'allow-scripts allow-same-origin allow-forms allow-popups allow-downloads'
+              : 'allow-scripts allow-forms'}
+          />
+        ) : showLoading ? (
+          <div className="flex h-full items-center justify-center px-6 text-sm text-muted-foreground">
+            {t('contextPanel.preview.loading')}
+          </div>
+        ) : showError ? (
+          <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-sm text-muted-foreground">
+            <div>{t('contextPanel.preview.proxyError')}</div>
+            {proxyState.status === 'error' ? (
+              <div className="text-center text-xs opacity-70">{proxyState.message}</div>
+            ) : null}
+          </div>
+        ) : (
+          <div className="flex h-full items-center justify-center px-6 text-sm text-muted-foreground">
+            {t('contextPanel.preview.invalidUrl')}
+          </div>
+        )}
+      </div>
+    </div>
+  );
 };
 
 export const ContextPanel: React.FC = () => {
@@ -422,7 +619,9 @@ export const ContextPanel: React.FC = () => {
         ? <ContextPanelContent />
         : activeTab?.mode === 'plan'
           ? <PlanView targetPath={activeTab.targetPath} />
-          : null;
+          : activeTab?.mode === 'preview'
+            ? <PreviewPane rawUrl={activeTab.targetPath ?? ''} />
+            : null;
 
   const chatTabs = React.useMemo(
     () => tabs.filter((tab) => tab.mode === 'chat'),

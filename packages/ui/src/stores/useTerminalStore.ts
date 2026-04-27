@@ -20,6 +20,8 @@ export type TerminalTab = {
   bufferLength: number;
   isConnecting: boolean;
   createdAt: number;
+  previewUrl: string | null;
+  previewAutoOpened: boolean;
 };
 
 export type DirectoryTerminalState = {
@@ -47,6 +49,7 @@ interface TerminalStore {
   setConnecting: (directory: string, tabId: string, isConnecting: boolean) => void;
   appendToBuffer: (directory: string, tabId: string, chunk: string) => void;
   clearBuffer: (directory: string, tabId: string) => void;
+  markPreviewAutoOpened: (directory: string, tabId: string) => void;
 
   removeDirectory: (directory: string) => void;
   clearAll: () => void;
@@ -95,7 +98,23 @@ const createEmptyTab = (id: string, label: string): TerminalTab => ({
   bufferLength: 0,
   isConnecting: false,
   createdAt: Date.now(),
+  previewUrl: null,
+  previewAutoOpened: false,
 });
+
+// eslint-disable-next-line no-control-regex
+const ANSI_ESCAPE_PATTERN = /\x1b\[[0-9;]*m/g;
+const URL_PATTERN = /(https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0)(?::\d{2,5})?(?:\/[\w\-./~%!$&'()*+,;=:@?#[\]]*)?)/i;
+
+const extractPreviewUrl = (chunk: string): string | null => {
+  if (!chunk) return null;
+  const cleaned = chunk.replace(ANSI_ESCAPE_PATTERN, '');
+  const match = cleaned.match(URL_PATTERN);
+  if (!match?.[1]) return null;
+  const url = match[1];
+  // Normalize 0.0.0.0 -> 127.0.0.1 so iframe can load.
+  return url.includes('0.0.0.0') ? url.replace('0.0.0.0', '127.0.0.1') : url;
+};
 
 const createEmptyDirectoryState = (firstTab: TerminalTab): DirectoryTerminalState => ({
   tabs: [firstTab],
@@ -397,15 +416,47 @@ export const useTerminalStore = create<TerminalStore>()(
               bufferLength -= removed.data.length;
             }
 
+            const maybePreviewUrl = extractPreviewUrl(chunk);
+            const shouldUpdatePreview = Boolean(maybePreviewUrl && maybePreviewUrl !== tab.previewUrl);
+
             const nextTabs = [...existing.tabs];
             nextTabs[idx] = {
               ...tab,
               bufferChunks,
               bufferLength,
+              ...(shouldUpdatePreview
+                ? { previewUrl: maybePreviewUrl, previewAutoOpened: false }
+                : null),
             };
             newSessions.set(key, { ...existing, tabs: nextTabs });
 
             return { sessions: newSessions, nextChunkId: chunkId + 1 };
+          });
+        },
+
+        markPreviewAutoOpened: (directory: string, tabId: string) => {
+          const key = normalizeDirectory(directory);
+          set((state) => {
+            const newSessions = new Map(state.sessions);
+            const existing = newSessions.get(key);
+            if (!existing) {
+              return state;
+            }
+
+            const idx = findTabIndex(existing, tabId);
+            if (idx < 0) {
+              return state;
+            }
+
+            const tab = existing.tabs[idx];
+            if (!tab.previewUrl || tab.previewAutoOpened) {
+              return state;
+            }
+
+            const nextTabs = [...existing.tabs];
+            nextTabs[idx] = { ...tab, previewAutoOpened: true };
+            newSessions.set(key, { ...existing, tabs: nextTabs });
+            return { sessions: newSessions };
           });
         },
 
@@ -525,6 +576,8 @@ export const useTerminalStore = create<TerminalStore>()(
                 bufferChunks: [],
                 bufferLength: 0,
                 isConnecting: false,
+                previewUrl: null,
+                previewAutoOpened: false,
               });
             }
 
