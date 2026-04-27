@@ -17,7 +17,7 @@ import { toast } from '@/components/ui';
 import { copyTextToClipboard } from '@/lib/clipboard';
 import { useI18n } from '@/lib/i18n';
 
-import { isExternalHttpUrl, openExternalUrl } from '@/lib/url';
+import { isExternalHttpUrl, isLoopbackHttpUrl, openExternalUrl } from '@/lib/url';
 import { useOptionalThemeSystem } from '@/contexts/useThemeSystem';
 import { getDefaultTheme } from '@/lib/theme/themes';
 import { generateSyntaxTheme } from '@/lib/theme/syntaxThemeGenerator';
@@ -843,8 +843,14 @@ const MarkdownCodeBlock: React.FC<{
 
 const buildMarkdownComponents = ({
   syntaxTheme,
+  onPreviewLoopback,
+  previewLabel,
+  previewTitle,
 }: {
   syntaxTheme: { [key: string]: React.CSSProperties };
+  onPreviewLoopback?: (url: string) => void;
+  previewLabel?: string;
+  previewTitle?: string;
 }): Components => ({
   table({ children, ...props }) {
     return <TableWrapper className={props.className}>{children}</TableWrapper>;
@@ -919,15 +925,36 @@ const buildMarkdownComponents = ({
     );
   },
   a({ href, children, ...props }) {
+    const targetHref = href ?? '';
+    const isLoopback = onPreviewLoopback ? isLoopbackHttpUrl(targetHref) : false;
     return (
-      <a
-        {...props}
-        href={href}
-        target={isExternalHttpUrl(href ?? '') ? '_blank' : undefined}
-        rel={isExternalHttpUrl(href ?? '') ? 'noopener noreferrer' : undefined}
-      >
-        {children}
-      </a>
+      <>
+        <a
+          {...props}
+          href={href}
+          target={isExternalHttpUrl(targetHref) ? '_blank' : undefined}
+          rel={isExternalHttpUrl(targetHref) ? 'noopener noreferrer' : undefined}
+        >
+          {children}
+        </a>
+        {isLoopback && onPreviewLoopback ? (
+          <button
+            type="button"
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onPreviewLoopback(targetHref);
+            }}
+            className="ml-1 inline-flex h-5 items-center gap-0.5 rounded border border-[var(--border)] bg-[var(--surface-background)] px-1.5 align-middle text-[11px] leading-none text-[var(--muted-foreground)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--foreground)]"
+            aria-label={previewTitle ?? previewLabel ?? 'Open preview pane'}
+            title={previewTitle ?? previewLabel ?? 'Open preview pane'}
+            data-loopback-preview-trigger="true"
+          >
+            <RiEyeLine className="size-3" aria-hidden="true" />
+            <span className="font-medium">{previewLabel ?? 'Preview'}</span>
+          </button>
+        ) : null}
+      </>
     );
   },
 });
@@ -1509,8 +1536,24 @@ const MarkdownRendererImpl: React.FC<MarkdownRendererProps> = ({
     preferRuntimeEditor: runtime.isVSCode,
   });
   useExternalLinkInteractions({ containerRef });
+  const openContextPreview = useUIStore((state) => state.openContextPreview);
+  const { t } = useI18n();
+  const handlePreviewLoopback = React.useCallback((url: string) => {
+    if (!effectiveDirectory) return;
+    openContextPreview(effectiveDirectory, url);
+  }, [effectiveDirectory, openContextPreview]);
+  const previewLabel = t('terminalView.preview.open');
+  const previewTitle = t('terminalView.preview.openTitle');
   const syntaxTheme = React.useMemo(() => generateSyntaxTheme(currentTheme), [currentTheme]);
-  const markdownComponents = React.useMemo(() => buildMarkdownComponents({ syntaxTheme }), [syntaxTheme]);
+  const markdownComponents = React.useMemo(
+    () => buildMarkdownComponents({
+      syntaxTheme,
+      onPreviewLoopback: effectiveDirectory ? handlePreviewLoopback : undefined,
+      previewLabel,
+      previewTitle,
+    }),
+    [syntaxTheme, effectiveDirectory, handlePreviewLoopback, previewLabel, previewTitle],
+  );
   const componentKey = `markdown-${part?.id ? `part-${part.id}` : `message-${messageId}`}`;
   const markdownBlocks = useStableMarkdownBlocks(content, isStreaming && !disableStreamAnimation, componentKey);
 
