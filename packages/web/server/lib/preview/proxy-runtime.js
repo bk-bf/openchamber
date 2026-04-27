@@ -157,6 +157,57 @@ export const createPreviewProxyRuntime = ({
     return rest.length === 0 ? '/' : rest;
   };
 
+  // Strip the `frame-ancestors` directive from a CSP header value while
+  // preserving every other directive. Returns null if no directives remain.
+  const removeFrameAncestorsDirective = (cspValue) => {
+    if (typeof cspValue !== 'string' || cspValue.length === 0) {
+      return cspValue;
+    }
+    const directives = cspValue
+      .split(';')
+      .map((part) => part.trim())
+      .filter((part) => part.length > 0);
+
+    const filtered = directives.filter((directive) => {
+      const name = directive.split(/\s+/, 1)[0]?.toLowerCase() ?? '';
+      return name !== 'frame-ancestors';
+    });
+
+    if (filtered.length === 0) {
+      return null;
+    }
+    return filtered.join('; ');
+  };
+
+  // Drop response headers that prevent the dev server from being framed.
+  // The proxy itself is same-origin, so embedding is otherwise safe.
+  const stripFrameBustingHeaders = (headers) => {
+    if (!headers || typeof headers !== 'object') {
+      return;
+    }
+
+    const headerKeys = Object.keys(headers);
+    for (const key of headerKeys) {
+      const lowerKey = key.toLowerCase();
+      if (lowerKey === 'x-frame-options') {
+        delete headers[key];
+        continue;
+      }
+      if (lowerKey === 'content-security-policy' || lowerKey === 'content-security-policy-report-only') {
+        const original = headers[key];
+        const values = Array.isArray(original) ? original : [original];
+        const rewritten = values
+          .map((value) => removeFrameAncestorsDirective(value))
+          .filter((value) => typeof value === 'string' && value.length > 0);
+        if (rewritten.length === 0) {
+          delete headers[key];
+        } else {
+          headers[key] = Array.isArray(original) ? rewritten : rewritten[0];
+        }
+      }
+    }
+  };
+
   const attach = (app, {
     server,
     express,
@@ -244,6 +295,12 @@ export const createPreviewProxyRuntime = ({
           proxyReq.removeHeader('authorization');
           proxyReq.removeHeader('x-openchamber-ui-session');
           proxyReq.setHeader('accept-encoding', 'identity');
+        },
+        proxyRes: (proxyRes) => {
+          // Allow the dev server response to be framed inside OpenChamber even
+          // if it normally sets X-Frame-Options or a CSP frame-ancestors rule.
+          // The proxy is same-origin so embedding is otherwise safe.
+          stripFrameBustingHeaders(proxyRes.headers);
         },
         error: (err, _req, res) => {
           console.error('[preview-proxy] proxy error:', err.message);
