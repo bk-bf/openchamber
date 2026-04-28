@@ -372,8 +372,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
     return getSettingsPageMeta(settingsSlug);
   }, [settingsSlug]);
 
-  // Collapse main nav to icon rail when active page has its own sidebar
-  const isNavCollapsed = !isMobile && activePageMeta?.kind === 'split';
+  // Keep main nav always open — do not collapse for split pages
+  const isNavCollapsed = false;
 
   const openChamberSectionBySlug: Partial<Record<SettingsPageSlug, OpenChamberSection>> = React.useMemo(() => ({
     appearance: 'visual',
@@ -686,16 +686,20 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
           <div className={cn('w-[264px] min-w-[264px] border-r', runtimeCtx.isVSCode ? 'bg-background' : 'bg-sidebar')} style={{ borderColor: 'var(--interactive-border)' }}>
             <ErrorBoundary>{renderPageSidebar(settingsSlug, {})}</ErrorBoundary>
           </div>
-          <div className="flex-1 overflow-hidden bg-background">
-            <ErrorBoundary>{renderPageContent(settingsSlug)}</ErrorBoundary>
+          <div className="flex-1 overflow-hidden bg-background flex justify-center">
+            <div className="w-full max-w-3xl overflow-auto">
+              <ErrorBoundary>{renderPageContent(settingsSlug)}</ErrorBoundary>
+            </div>
           </div>
         </div>
       );
     }
 
     return (
-      <div className="h-full overflow-hidden bg-background">
-        <ErrorBoundary>{renderPageContent(settingsSlug)}</ErrorBoundary>
+      <div className="h-full overflow-hidden bg-background flex justify-center">
+        <div className="w-full max-w-3xl overflow-auto">
+          <ErrorBoundary>{renderPageContent(settingsSlug)}</ErrorBoundary>
+        </div>
       </div>
     );
   };

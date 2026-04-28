@@ -171,6 +171,7 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
   const [projectRepoStatus, setProjectRepoStatus] = React.useState<Map<string, boolean | null>>(new Map());
   const [expandedSessionGroups, setExpandedSessionGroups] = React.useState<Set<string>>(new Set());
   const [newWorktreeDialogOpen, setNewWorktreeDialogOpen] = React.useState(false);
+  const [worktreeRefreshNonce, setWorktreeRefreshNonce] = React.useState(0);
   const [updateDialogOpen, setUpdateDialogOpen] = React.useState(false);
   const [openSidebarMenuKey, setOpenSidebarMenuKey] = React.useState<string | null>(null);
   const [renamingFolderId, setRenamingFolderId] = React.useState<string | null>(null);
@@ -406,7 +407,7 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [currentDirectory, syncSessionStructureSignature, projects]);
+  }, [currentDirectory, syncSessionStructureSignature, projects, worktreeRefreshNonce]);
 
   React.useEffect(() => {
     let refreshTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -1731,6 +1732,7 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
         open={newWorktreeDialogOpen}
         onOpenChange={setNewWorktreeDialogOpen}
         onWorktreeCreated={(worktreePath, options) => {
+          setWorktreeRefreshNonce((n) => n + 1);
           setActiveMainTab('chat');
           if (mobileVariant) {
             setSessionSwitcherOpen(false);

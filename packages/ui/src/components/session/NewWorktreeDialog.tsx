@@ -1833,7 +1833,7 @@ export function NewWorktreeDialog({
                         <RiArrowDownSLine className="h-4 w-4 shrink-0 text-muted-foreground" />
                       </Button>
                     </DropdownMenuTrigger>
-                    <DropdownMenuContent align="start" className="w-[320px] p-0" ref={sourceBranchDropdownContentRef}>
+                    <DropdownMenuContent align="start" className="w-[320px] p-0 max-h-[min(var(--available-height),24rem)] flex flex-col overflow-hidden" ref={sourceBranchDropdownContentRef}>
                       <Command shouldFilter={false}>
                         <CommandInput
                           placeholder={t('session.newWorktree.searchBranches')}
