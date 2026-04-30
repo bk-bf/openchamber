@@ -1,12 +1,30 @@
 #!/usr/bin/env node
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import path from 'node:path';
+import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, '../../..');
 const desktopDir = path.join(repoRoot, 'packages/desktop');
+
+function resolveModulesRoot() {
+  const localTauri = path.join(repoRoot, 'packages', 'desktop', 'node_modules', '.bin', 'tauri');
+  if (fs.existsSync(localTauri)) {
+    return repoRoot;
+  }
+  const result = spawnSync('git', ['rev-parse', '--git-common-dir'], { encoding: 'utf8', cwd: repoRoot });
+  if (result.status === 0 && result.stdout) {
+    const gitCommonDir = result.stdout.trim();
+    const mainWorktree = path.resolve(repoRoot, gitCommonDir, '..');
+    return mainWorktree;
+  }
+  return repoRoot;
+}
+
+const modulesRoot = resolveModulesRoot();
+const tauriBin = path.join(modulesRoot, 'packages', 'desktop', 'node_modules', '.bin', 'tauri');
 
 function spawnProcess(command, args, opts = {}) {
   return spawn(command, args, {
@@ -78,16 +96,13 @@ async function stopChildTree(child) {
 }
 
 async function main() {
-  const tauriProcess = spawnProcess('bun', [
-    '--cwd',
-    desktopDir,
-    'tauri',
+  const tauriProcess = spawnProcess(tauriBin, [
     'dev',
     '--features',
     'devtools',
     '--config',
     './src-tauri/tauri.dev.conf.json',
-  ]);
+  ], { cwd: desktopDir });
 
   let cleaning = false;
 
