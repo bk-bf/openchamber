@@ -8,9 +8,10 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, '../../..');
 const desktopDir = path.join(repoRoot, 'packages/desktop');
+const tauriBinName = process.platform === 'win32' ? 'tauri.cmd' : 'tauri';
 
 function resolveModulesRoot() {
-  const localTauri = path.join(repoRoot, 'packages', 'desktop', 'node_modules', '.bin', 'tauri');
+  const localTauri = path.join(repoRoot, 'packages', 'desktop', 'node_modules', '.bin', tauriBinName);
   if (fs.existsSync(localTauri)) {
     return repoRoot;
   }
@@ -24,7 +25,7 @@ function resolveModulesRoot() {
 }
 
 const modulesRoot = resolveModulesRoot();
-const tauriBin = path.join(modulesRoot, 'packages', 'desktop', 'node_modules', '.bin', 'tauri');
+const tauriBin = path.join(modulesRoot, 'packages', 'desktop', 'node_modules', '.bin', tauriBinName);
 
 function spawnProcess(command, args, opts = {}) {
   return spawn(command, args, {
@@ -102,7 +103,7 @@ async function main() {
     'devtools',
     '--config',
     './src-tauri/tauri.dev.conf.json',
-  ], { cwd: desktopDir });
+  ], { cwd: desktopDir, shell: process.platform === 'win32' });
 
   let cleaning = false;
 
