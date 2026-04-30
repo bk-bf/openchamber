@@ -187,6 +187,8 @@ export const CommandsPage: React.FC = () => {
     );
   }
 
+  const modelSlashIndex = model.indexOf('/');
+
   return (
     <ScrollableOverlay outerClassName="h-full" className="w-full">
       <div className="mx-auto w-full max-w-3xl p-3 sm:p-6 sm:pt-8">
@@ -295,8 +297,8 @@ export const CommandsPage: React.FC = () => {
               </div>
               <div className="flex min-w-0 flex-1 items-center gap-2 sm:w-fit sm:flex-initial">
                 <ModelSelector
-                  providerId={model ? model.split('/')[0] : ''}
-                  modelId={model ? model.split('/')[1] : ''}
+                  providerId={model && modelSlashIndex !== -1 ? model.slice(0, modelSlashIndex) : ''}
+                  modelId={model && modelSlashIndex !== -1 ? model.slice(modelSlashIndex + 1) : ''}
                   onChange={(providerId: string, modelId: string) => {
                     if (providerId && modelId) {
                       setModel(`${providerId}/${modelId}`);
